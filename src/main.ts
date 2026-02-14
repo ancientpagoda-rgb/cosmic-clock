@@ -2,7 +2,16 @@ import './style.css'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import GUI from 'lil-gui'
-import { Body, GeoVector, HelioVector, Observer, Equator, Horizon } from 'astronomy-engine'
+import {
+  Body,
+  GeoVector,
+  HelioVector,
+  Observer,
+  Equator,
+  Horizon,
+  EquatorFromVector,
+  SiderealTime,
+} from 'astronomy-engine'
 
 // Lawrence, KS
 const DEFAULT_LAT = 38.9717
@@ -115,10 +124,11 @@ async function buildEarthPanel(
   const { scene, camera, controls } = panel
 
   // Lights
-  const ambient = new THREE.AmbientLight(0x223344, 0.35)
+  // Keep ambient low so the night side is actually dark.
+  const ambient = new THREE.AmbientLight(0x112233, 0.12)
   scene.add(ambient)
 
-  const sunLight = new THREE.DirectionalLight(0xffffff, 1.4)
+  const sunLight = new THREE.DirectionalLight(0xffffff, 1.8)
   sunLight.position.set(5, 0, 0)
   scene.add(sunLight)
 
@@ -153,39 +163,57 @@ async function buildEarthPanel(
 
   const overlay = panel.root.querySelector<HTMLElement>('.overlay')!
 
-  panel.onFrame = (t) => {
-    // Rotate Earth according to simulation time (approx; "clock-like")
-    // 360 degrees per sidereal day ~ 86164.0905s
-    const siderealSec = 86164.0905
-    const epoch = Date.UTC(2000, 0, 1, 12, 0, 0)
-    const secSinceEpoch = (t.sim.getTime() - epoch) / 1000
-    const rot = (secSinceEpoch / siderealSec) * Math.PI * 2
-    earth.rotation.y = rot
-    atmo.rotation.y = rot
+  // Orientation knobs
+  const obliquityDeg = 23.43928
+  const obliquity = (obliquityDeg * Math.PI) / 180
+  // Texture prime meridian offset (depends on texture). This value works "pretty well"
+  // for the three.js earth texture, but you can tweak later if needed.
+  const textureOffsetDeg = -90
 
-    // Sun direction (from Earth to Sun) for lighting
+  panel.onFrame = (t) => {
+    // Sun direction (from Earth to Sun) for lighting.
+    // GeoVector() gives an Earth-centered vector toward the Sun.
     const gv = GeoVector(Body.Sun, t.sim, true)
     const sunDir = unit(astroToThreeVec(gv, 1))
     sunLight.position.copy(sunDir.multiplyScalar(5))
 
-    // Place marker at lat/lon
+    // Earth axial tilt (constant, for the "seasons" feel).
+    // Apply as a rotation around Z so you see the terminator tilt over the year.
+    earth.rotation.set(0, 0, 0)
+    atmo.rotation.set(0, 0, 0)
+    earth.rotateZ(obliquity)
+    atmo.rotateZ(obliquity)
+
+    // Rotate Earth around its tilted axis so the subsolar longitude is approximately correct.
+    // Compute subsolar longitude from Greenwich sidereal time and Sun RA.
+    // RA/GST are in hours.
+    const eqGeo = EquatorFromVector(gv)
+    const raHours = eqGeo.ra
+    const gstHours = SiderealTime(t.sim)
+    const haDeg = ((gstHours - raHours) * 15 + 540) % 360 - 180 // (-180,180]
+    const subsolarLonDeg = -haDeg
+
+    const spin = ((subsolarLonDeg + textureOffsetDeg) * Math.PI) / 180
+    earth.rotateY(spin)
+    atmo.rotateY(spin)
+
+    // Place marker at lat/lon (Lawrence, KS by default)
     const lat = opts.getLat()
     const lon = opts.getLon()
 
     const latRad = (lat * Math.PI) / 180
     const lonRad = (lon * Math.PI) / 180
     const r = 1.01
-    // lon: east-positive. Convert: x = r*cos(lat)*cos(lon), z = r*cos(lat)*sin(lon)
     marker.position.set(
       r * Math.cos(latRad) * Math.cos(lonRad),
       r * Math.sin(latRad),
       r * Math.cos(latRad) * Math.sin(lonRad)
     )
 
-    // Rough local sun altitude for Lawrence KS
+    // Local sun altitude/azimuth
     const observer = new Observer(lat, lon, 0)
-    const eq = Equator(Body.Sun, t.sim, observer, true, true)
-    const hor = Horizon(t.sim, observer, eq.ra, eq.dec, 'normal')
+    const eqTop = Equator(Body.Sun, t.sim, observer, true, true)
+    const hor = Horizon(t.sim, observer, eqTop.ra, eqTop.dec, 'normal')
 
     const label = opts.getLabel ? opts.getLabel() : 'Earth'
 
@@ -193,8 +221,8 @@ async function buildEarthPanel(
       `<b>${label}</b>`,
       `Local time: ${formatTime(t.now)}`,
       `Sim time: ${formatTime(t.sim)}`,
-      `Sun altitude: ${hor.altitude.toFixed(1)}°`,
-      `Sun azimuth: ${hor.azimuth.toFixed(1)}°`,
+      `Subsolar lon (approx): ${subsolarLonDeg.toFixed(1)}°`,
+      `Sun alt/az: ${hor.altitude.toFixed(1)}° / ${hor.azimuth.toFixed(1)}°`,
     ])
   }
 
@@ -205,71 +233,115 @@ async function buildEarthPanel(
 function buildSolarPanel(panel: Panel) {
   const { scene, camera, controls } = panel
 
-  const ambient = new THREE.AmbientLight(0x223344, 0.35)
+  const ambient = new THREE.AmbientLight(0x223344, 0.25)
   scene.add(ambient)
 
-  const sunLight = new THREE.PointLight(0xffffff, 3, 0)
+  const sunLight = new THREE.PointLight(0xffffff, 3.2, 0)
   sunLight.position.set(0, 0, 0)
   scene.add(sunLight)
 
+  // Scene scale: 1 unit = 1 AU
+  const AU = 1
+
   // Sun
   const sun = new THREE.Mesh(
-    new THREE.SphereGeometry(0.15, 32, 32),
+    new THREE.SphereGeometry(0.12, 32, 32),
     new THREE.MeshBasicMaterial({ color: 0xffcc66 })
   )
   scene.add(sun)
 
-  // Earth orbit ring (approx circle)
-  const ring = new THREE.Mesh(
-    new THREE.RingGeometry(0.98, 1.02, 128),
-    new THREE.MeshBasicMaterial({ color: 0x335577, side: THREE.DoubleSide, transparent: true, opacity: 0.6 })
+  // Bodies we will render
+  const bodies: Array<{
+    body: Body
+    name: string
+    color: number
+    radius: number
+    aAU: number // approximate semi-major axis, for orbit rings
+  }> = [
+    { body: Body.Mercury, name: 'Mercury', color: 0xb0b0b0, radius: 0.018, aAU: 0.387 },
+    { body: Body.Venus, name: 'Venus', color: 0xe7c27c, radius: 0.026, aAU: 0.723 },
+    { body: Body.Earth, name: 'Earth', color: 0x5aa9ff, radius: 0.028, aAU: 1.0 },
+    { body: Body.Mars, name: 'Mars', color: 0xff7760, radius: 0.022, aAU: 1.524 },
+    { body: Body.Jupiter, name: 'Jupiter', color: 0xd9b38c, radius: 0.055, aAU: 5.203 },
+    { body: Body.Saturn, name: 'Saturn', color: 0xe8d39a, radius: 0.050, aAU: 9.537 },
+    { body: Body.Uranus, name: 'Uranus', color: 0x9ad8e8, radius: 0.040, aAU: 19.191 },
+    { body: Body.Neptune, name: 'Neptune', color: 0x6f89ff, radius: 0.040, aAU: 30.07 },
+  ]
+
+  // Orbit rings (flat ecliptic plane for readability)
+  for (const b of bodies) {
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(b.aAU * AU - 0.01, b.aAU * AU + 0.01, 192),
+      new THREE.MeshBasicMaterial({ color: 0x29405f, side: THREE.DoubleSide, transparent: true, opacity: 0.28 })
+    )
+    ring.rotation.x = Math.PI / 2
+    scene.add(ring)
+  }
+
+  // Planet meshes
+  const planetMeshes = new Map<Body, THREE.Mesh>()
+  for (const b of bodies) {
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(b.radius, 24, 24),
+      new THREE.MeshStandardMaterial({ color: b.color, roughness: 0.95, metalness: 0 })
+    )
+    scene.add(mesh)
+    planetMeshes.set(b.body, mesh)
+  }
+
+  // Moon (shown near Earth, with exaggerated distance)
+  const moon = new THREE.Mesh(
+    new THREE.SphereGeometry(0.010, 20, 20),
+    new THREE.MeshStandardMaterial({ color: 0xd6d6d6, roughness: 1, metalness: 0 })
   )
-  ring.rotation.x = Math.PI / 2
-  scene.add(ring)
-
-  // Earth
-  const earth = new THREE.Mesh(
-    new THREE.SphereGeometry(0.05, 24, 24),
-    new THREE.MeshStandardMaterial({ color: 0x5aa9ff, roughness: 0.9, metalness: 0 })
-  )
-  scene.add(earth)
-
-  // Tiny axis helper
-  const axes = new THREE.AxesHelper(0.5)
-  ;(axes.material as THREE.Material).transparent = true
-  ;(axes.material as THREE.Material).opacity = 0.25
-  scene.add(axes)
-
-  controls.target.set(0, 0, 0)
-  controls.minDistance = 0.6
-  controls.maxDistance = 20
+  scene.add(moon)
 
   const overlay = panel.root.querySelector<HTMLElement>('.overlay')!
 
+  // Helpers
+  const axes = new THREE.AxesHelper(0.6)
+  ;(axes.material as THREE.Material).transparent = true
+  ;(axes.material as THREE.Material).opacity = 0.18
+  scene.add(axes)
+
+  controls.target.set(0, 0, 0)
+  controls.minDistance = 0.8
+  controls.maxDistance = 80
+
   panel.onFrame = (t) => {
-    // Heliocentric Earth vector in AU
-    const hv = HelioVector(Body.Earth, t.sim)
-    const p = astroToThreeVec(hv, 1) // AU units
+    // Place planets (flatten to XZ plane for legibility)
+    for (const b of bodies) {
+      const hv = HelioVector(b.body, t.sim) // AU
+      const p = astroToThreeVec(hv, AU)
+      const mesh = planetMeshes.get(b.body)!
+      mesh.position.set(p.x, 0, p.y)
+    }
 
-    // Put ecliptic plane in XZ for readability
-    earth.position.set(p.x, 0, p.y) // using y as "z" (flatten)
+    const earthMesh = planetMeshes.get(Body.Earth)!
 
-    const r = Math.sqrt(earth.position.x ** 2 + earth.position.z ** 2)
+    // Moon position: geocentric vector from Earth to Moon.
+    // We exaggerate the distance so it's visible at AU scale.
+    const moonVec = GeoVector(Body.Moon, t.sim, true) // AU from Earth center
+    const moonP = astroToThreeVec(moonVec, AU)
+    const moonExaggeration = 60
+    moon.position.copy(earthMesh.position.clone().add(new THREE.Vector3(moonP.x, 0, moonP.y).multiplyScalar(moonExaggeration)))
 
-    // Season marker: ecliptic longitude of Sun as seen from Earth
-    // (Simple indicator from the helio vector angle)
-    const theta = Math.atan2(earth.position.z, earth.position.x) // radians
+    // Overlay
+    const earthR = earthMesh.position.length()
+    const theta = Math.atan2(earthMesh.position.z, earthMesh.position.x)
     const deg = (theta * 180) / Math.PI
 
     textOverlay(overlay, [
-      `<b>Solar System (inner)</b>`,
+      `<b>Solar System (planets + Moon)</b>`,
       `Sim time: ${formatTime(t.sim)}`,
-      `Earth–Sun distance: ${r.toFixed(3)} AU`,
-      `Orbit angle (approx): ${deg.toFixed(1)}°`,
+      `Earth–Sun distance: ${earthR.toFixed(3)} AU`,
+      `Earth orbit angle (approx): ${deg.toFixed(1)}°`,
+      `Moon distance exaggerated: ×${moonExaggeration}`,
     ])
   }
 
-  camera.position.set(0, 2.2, 3.5)
+  camera.position.set(0, 10, 12)
+  camera.lookAt(0, 0, 0)
 }
 
 function buildGalaxyPanel(panel: Panel, params: { getExaggeration: () => number }) {
