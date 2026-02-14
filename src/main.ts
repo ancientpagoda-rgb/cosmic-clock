@@ -9,7 +9,6 @@ import {
   Observer,
   Equator,
   Horizon,
-  EquatorFromVector,
   SiderealTime,
 } from 'astronomy-engine'
 
@@ -171,39 +170,31 @@ async function buildEarthPanel(
 
   const overlay = panel.root.querySelector<HTMLElement>('.overlay')!
 
-  // Orientation knobs
-  const obliquityDeg = 23.43928
-  const obliquity = (obliquityDeg * Math.PI) / 180
   // Texture prime meridian offset (depends on the texture). We'll expose this via GUI.
+  // (0 means: texture seam/origin as-is.)
   const textureOffsetDeg = 0
 
   panel.onFrame = (t) => {
     // Sun direction (from Earth to Sun) for lighting.
-    // GeoVector() gives an Earth-centered vector toward the Sun.
+    // GeoVector() gives an Earth-centered *equatorial* vector toward the Sun.
     const gv = GeoVector(Body.Sun, t.sim, true)
     const sunDir = unit(astroToThreeVec(gv, 1))
     sunLight.position.copy(sunDir.multiplyScalar(5))
 
-    // Earth axial tilt (constant, for the "seasons" feel).
-    // Apply as a rotation around Z so you see the terminator tilt over the year.
-    earth.rotation.set(0, 0, 0)
-    atmo.rotation.set(0, 0, 0)
-    earth.rotateZ(obliquity)
-    atmo.rotateZ(obliquity)
-
-    // Rotate Earth around its tilted axis so the subsolar longitude is approximately correct.
-    // Compute subsolar longitude from Greenwich sidereal time and Sun RA.
-    // RA/GST are in hours.
-    const eqGeo = EquatorFromVector(gv)
-    const raHours = eqGeo.ra
+    // Earth orientation: rotate Earth-fixed longitudes into the same equatorial frame as the Sun vector.
+    // Use Greenwich sidereal time to spin the Earth around its north axis.
     const gstHours = SiderealTime(t.sim)
-    const haDeg = ((gstHours - raHours) * 15 + 540) % 360 - 180 // (-180,180]
-    const subsolarLonDeg = -haDeg
+    const gstRad = (gstHours * 15 * Math.PI) / 180
 
     const texOff = opts.getTextureOffsetDeg ? opts.getTextureOffsetDeg() : textureOffsetDeg
-    const spin = ((subsolarLonDeg + texOff) * Math.PI) / 180
-    earth.rotateY(spin)
-    atmo.rotateY(spin)
+    const offRad = (texOff * Math.PI) / 180
+
+    earth.rotation.set(0, 0, 0)
+    atmo.rotation.set(0, 0, 0)
+
+    // Sign: negative so increasing sidereal time rotates Earth eastward under the inertial sky.
+    earth.rotation.y = -gstRad + offRad
+    atmo.rotation.y = -gstRad + offRad
 
     // Place marker at lat/lon (Lawrence, KS by default)
     const lat = opts.getLat()
@@ -225,12 +216,14 @@ async function buildEarthPanel(
 
     const label = opts.getLabel ? opts.getLabel() : 'Earth'
 
+    const daylight = hor.altitude > 0
+
     textOverlay(overlay, [
       `<b>${label}</b>`,
       `Local time: ${formatTime(t.now)}`,
       `Sim time: ${formatTime(t.sim)}`,
-      `Subsolar lon (approx): ${subsolarLonDeg.toFixed(1)}°`,
       `Sun alt/az: ${hor.altitude.toFixed(1)}° / ${hor.azimuth.toFixed(1)}°`,
+      `Lawrence: ${daylight ? 'daylight' : 'night'}`,
     ])
   }
 
@@ -305,6 +298,44 @@ function buildSolarPanel(panel: Panel) {
   scene.add(moon)
 
   const overlay = panel.root.querySelector<HTMLElement>('.overlay')!
+  const tooltip = panel.root.querySelector<HTMLElement>('.tooltip')!
+
+  // Hover labels
+  const raycaster = new THREE.Raycaster()
+  const mouse = new THREE.Vector2()
+  const hoverTargets: Array<{ obj: THREE.Object3D; label: string }> = []
+
+  for (const b of bodies) {
+    hoverTargets.push({ obj: planetMeshes.get(b.body)!, label: b.name })
+  }
+  hoverTargets.push({ obj: moon, label: 'Moon' })
+
+  function onPointerMove(ev: PointerEvent) {
+    const rect = panel.renderer.domElement.getBoundingClientRect()
+    const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1
+    const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1)
+    mouse.set(x, y)
+
+    raycaster.setFromCamera(mouse, panel.camera)
+
+    const intersects = raycaster.intersectObjects(hoverTargets.map((t) => t.obj), true)
+    if (intersects.length === 0) {
+      tooltip.style.display = 'none'
+      return
+    }
+
+    const hit = intersects[0].object
+    const found = hoverTargets.find((t) => t.obj === hit || t.obj.children.includes(hit))
+    tooltip.textContent = found?.label ?? 'Object'
+    tooltip.style.display = 'block'
+    tooltip.style.left = `${ev.clientX - rect.left + 12}px`
+    tooltip.style.top = `${ev.clientY - rect.top + 12}px`
+  }
+
+  panel.renderer.domElement.addEventListener('pointermove', onPointerMove)
+  panel.renderer.domElement.addEventListener('pointerleave', () => {
+    tooltip.style.display = 'none'
+  })
 
   // Helpers
   const axes = new THREE.AxesHelper(0.6)
@@ -352,90 +383,7 @@ function buildSolarPanel(panel: Panel) {
   camera.lookAt(0, 0, 0)
 }
 
-function buildGalaxyPanel(panel: Panel, params: { getExaggeration: () => number }) {
-  const { scene, camera, controls } = panel
-
-  const ambient = new THREE.AmbientLight(0x223344, 0.4)
-  scene.add(ambient)
-
-  // Stylized Milky Way disk
-  const disk = new THREE.Mesh(
-    new THREE.CircleGeometry(5, 128),
-    new THREE.MeshBasicMaterial({ color: 0x0b1020, transparent: true, opacity: 0.9 })
-  )
-  disk.rotation.x = -Math.PI / 2
-  scene.add(disk)
-
-  // Spiral-ish ring bands
-  for (let i = 1; i <= 4; i++) {
-    const r0 = i * 1.0
-    const band = new THREE.Mesh(
-      new THREE.RingGeometry(r0 - 0.05, r0 + 0.05, 128),
-      new THREE.MeshBasicMaterial({ color: 0x1a2a44, side: THREE.DoubleSide, transparent: true, opacity: 0.35 })
-    )
-    band.rotation.x = Math.PI / 2
-    scene.add(band)
-  }
-
-  // Galactic center
-  const center = new THREE.Mesh(
-    new THREE.SphereGeometry(0.12, 24, 24),
-    new THREE.MeshBasicMaterial({ color: 0xff8866 })
-  )
-  scene.add(center)
-
-  // Sun marker
-  const sun = new THREE.Mesh(
-    new THREE.SphereGeometry(0.06, 24, 24),
-    new THREE.MeshBasicMaterial({ color: 0xffdd88 })
-  )
-  scene.add(sun)
-
-  // Orbit path
-  const orbit = new THREE.Mesh(
-    new THREE.RingGeometry(3.0 - 0.01, 3.0 + 0.01, 256),
-    new THREE.MeshBasicMaterial({ color: 0x335577, side: THREE.DoubleSide, transparent: true, opacity: 0.6 })
-  )
-  orbit.rotation.x = Math.PI / 2
-  scene.add(orbit)
-
-  controls.target.set(0, 0, 0)
-  controls.minDistance = 1.5
-  controls.maxDistance = 40
-
-  const overlay = panel.root.querySelector<HTMLElement>('.overlay')!
-
-  // Constants (rough): Sun ~ 8.2 kpc from center.
-  // We draw that as radius 3.0 in scene units.
-  const R_DRAW = 3.0
-
-  panel.onFrame = (t) => {
-    // Galactic orbital period ~ 230 million years.
-    const P_years = 230_000_000
-    const P_ms = P_years * 365.25 * 24 * 3600 * 1000
-
-    const epoch = Date.UTC(2000, 0, 1, 12, 0, 0)
-    const msSinceEpoch = t.sim.getTime() - epoch
-
-    // Exaggeration lets it move visibly.
-    const exaggeration = params.getExaggeration()
-    const effective = msSinceEpoch * exaggeration
-
-    const angle = (effective / P_ms) * Math.PI * 2
-
-    sun.position.set(R_DRAW * Math.cos(angle), 0, R_DRAW * Math.sin(angle))
-
-    textOverlay(overlay, [
-      `<b>Milky Way (stylized)</b>`,
-      `Sim time: ${formatTime(t.sim)}`,
-      `Model: Sun at ~8.2 kpc; orbit ~230 Myr`,
-      `Time exaggeration: ×${exaggeration.toLocaleString()}`,
-    ])
-  }
-
-  camera.position.set(0, 7, 7)
-  camera.lookAt(0, 0, 0)
-}
+// (Milky Way panel removed)
 
 function makePanelShell(parent: HTMLElement, title: string) {
   const shell = document.createElement('section')
@@ -443,6 +391,7 @@ function makePanelShell(parent: HTMLElement, title: string) {
   shell.innerHTML = `
     <div class="panelTitle">${title}</div>
     <div class="overlay"></div>
+    <div class="tooltip" style="display:none"></div>
   `
   parent.appendChild(shell)
   return shell
@@ -462,7 +411,6 @@ async function main() {
 
   const earthShell = makePanelShell(panelsRoot, 'Earth')
   const solarShell = makePanelShell(panelsRoot, 'Solar System')
-  const galaxyShell = makePanelShell(panelsRoot, 'Milky Way')
 
   const time = new TimeController()
 
@@ -472,7 +420,6 @@ async function main() {
     resetNow: () => time.resetNow(),
     lat: DEFAULT_LAT,
     lon: DEFAULT_LON,
-    galaxyExaggeration: 5_000_000, // default so you can see it move
     earthTextureOffsetDeg: 0,
   }
 
@@ -490,9 +437,7 @@ async function main() {
   locFolder.add(params, 'lon', -180, 180, 0.0001)
   locFolder.close()
 
-  const galFolder = gui.addFolder('Galaxy')
-  galFolder.add(params, 'galaxyExaggeration', 1, 200_000_000, 1).name('time exaggeration')
-  galFolder.close()
+  // (Milky Way panel removed)
 
   time.paused = params.paused
   time.speed = params.speed
@@ -500,7 +445,6 @@ async function main() {
   const panels: Panel[] = [
     makePanel('earth', earthShell),
     makePanel('solar', solarShell),
-    makePanel('galaxy', galaxyShell),
   ]
 
   await buildEarthPanel(panels[0], {
@@ -510,9 +454,6 @@ async function main() {
     getTextureOffsetDeg: () => params.earthTextureOffsetDeg,
   } as any)
   buildSolarPanel(panels[1])
-  buildGalaxyPanel(panels[2], {
-    getExaggeration: () => params.galaxyExaggeration,
-  })
 
   const ro = new ResizeObserver(() => panels.forEach((p) => p.onResize()))
   panels.forEach((p) => ro.observe(p.root))
