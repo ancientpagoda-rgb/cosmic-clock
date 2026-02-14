@@ -113,13 +113,20 @@ function unit(v: THREE.Vector3) {
 }
 
 function astroToThreeVec(v: { x: number; y: number; z: number }, scale = 1) {
-  // astronomy-engine uses a right-handed coordinate system; we'll map x,y,z directly.
-  return new THREE.Vector3(v.x * scale, v.y * scale, v.z * scale)
+  // astronomy-engine vectors are in an equatorial coordinate system where +Z is north.
+  // Three.js is typically Y-up, so map astro Z -> three Y.
+  // We also map astro Y -> three Z to keep a right-handed system.
+  return new THREE.Vector3(v.x * scale, v.z * scale, v.y * scale)
 }
 
 async function buildEarthPanel(
   panel: Panel,
-  opts: { getLat: () => number; getLon: () => number; getLabel?: () => string }
+  opts: {
+    getLat: () => number
+    getLon: () => number
+    getLabel?: () => string
+    getTextureOffsetDeg?: () => number
+  }
 ) {
   const { scene, camera, controls } = panel
 
@@ -132,14 +139,15 @@ async function buildEarthPanel(
   sunLight.position.set(5, 0, 0)
   scene.add(sunLight)
 
-  // Earth
-  const texUrl = `${import.meta.env.BASE_URL}textures/earth_atmos_2048.jpg`
-  const tex = await new THREE.TextureLoader().loadAsync(texUrl)
-  tex.colorSpace = THREE.SRGBColorSpace
+  // Earth (higher-res day texture)
+  const dayUrl = `${import.meta.env.BASE_URL}textures/earth_day_4k.jpg`
+  const dayTex = await new THREE.TextureLoader().loadAsync(dayUrl)
+  dayTex.colorSpace = THREE.SRGBColorSpace
+  dayTex.anisotropy = 8
 
   const earth = new THREE.Mesh(
-    new THREE.SphereGeometry(1, 64, 64),
-    new THREE.MeshStandardMaterial({ map: tex, roughness: 1, metalness: 0 })
+    new THREE.SphereGeometry(1, 96, 96),
+    new THREE.MeshStandardMaterial({ map: dayTex, roughness: 1, metalness: 0 })
   )
   scene.add(earth)
 
@@ -150,12 +158,12 @@ async function buildEarthPanel(
   )
   scene.add(atmo)
 
-  // Location marker
+  // Location marker (attach to Earth so it rotates correctly)
   const marker = new THREE.Mesh(
     new THREE.SphereGeometry(0.02, 16, 16),
     new THREE.MeshBasicMaterial({ color: 0xffcc33 })
   )
-  scene.add(marker)
+  earth.add(marker)
 
   controls.target.set(0, 0, 0)
   controls.minDistance = 1.4
@@ -166,9 +174,8 @@ async function buildEarthPanel(
   // Orientation knobs
   const obliquityDeg = 23.43928
   const obliquity = (obliquityDeg * Math.PI) / 180
-  // Texture prime meridian offset (depends on texture). This value works "pretty well"
-  // for the three.js earth texture, but you can tweak later if needed.
-  const textureOffsetDeg = -90
+  // Texture prime meridian offset (depends on the texture). We'll expose this via GUI.
+  const textureOffsetDeg = 0
 
   panel.onFrame = (t) => {
     // Sun direction (from Earth to Sun) for lighting.
@@ -193,7 +200,8 @@ async function buildEarthPanel(
     const haDeg = ((gstHours - raHours) * 15 + 540) % 360 - 180 // (-180,180]
     const subsolarLonDeg = -haDeg
 
-    const spin = ((subsolarLonDeg + textureOffsetDeg) * Math.PI) / 180
+    const texOff = opts.getTextureOffsetDeg ? opts.getTextureOffsetDeg() : textureOffsetDeg
+    const spin = ((subsolarLonDeg + texOff) * Math.PI) / 180
     earth.rotateY(spin)
     atmo.rotateY(spin)
 
@@ -465,12 +473,17 @@ async function main() {
     lat: DEFAULT_LAT,
     lon: DEFAULT_LON,
     galaxyExaggeration: 5_000_000, // default so you can see it move
+    earthTextureOffsetDeg: 0,
   }
 
   const gui = new GUI({ title: 'Cosmic Clock' })
   gui.add(params, 'paused').onChange((v: boolean) => (time.paused = v))
   gui.add(params, 'speed', { '1× (real time)': 1, '60× (1 min/sec)': 60, '3600× (1 hr/sec)': 3600, '86400× (1 day/sec)': 86400 }).onChange((v: number) => (time.speed = v))
   gui.add(params, 'resetNow')
+
+  const earthFolder = gui.addFolder('Earth')
+  earthFolder.add(params, 'earthTextureOffsetDeg', -180, 180, 0.1).name('texture offset (deg)')
+  earthFolder.close()
 
   const locFolder = gui.addFolder('Location')
   locFolder.add(params, 'lat', -90, 90, 0.0001)
@@ -493,8 +506,9 @@ async function main() {
   await buildEarthPanel(panels[0], {
     getLat: () => params.lat,
     getLon: () => params.lon,
-    getLabel: () => `Earth (Lawrence, KS)`
-  })
+    getLabel: () => `Earth (Lawrence, KS)`,
+    getTextureOffsetDeg: () => params.earthTextureOffsetDeg,
+  } as any)
   buildSolarPanel(panels[1])
   buildGalaxyPanel(panels[2], {
     getExaggeration: () => params.galaxyExaggeration,
