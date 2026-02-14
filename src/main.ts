@@ -123,7 +123,8 @@ async function buildEarthPanel(
   scene.add(sunLight)
 
   // Earth
-  const tex = await new THREE.TextureLoader().loadAsync('/textures/earth_atmos_2048.jpg')
+  const texUrl = `${import.meta.env.BASE_URL}textures/earth_atmos_2048.jpg`
+  const tex = await new THREE.TextureLoader().loadAsync(texUrl)
   tex.colorSpace = THREE.SRGBColorSpace
 
   const earth = new THREE.Mesh(
