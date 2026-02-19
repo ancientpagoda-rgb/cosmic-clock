@@ -259,14 +259,14 @@ function buildSolarPanel(panel: Panel) {
     radius: number
     aAU: number // approximate semi-major axis, for orbit rings
   }> = [
-    { body: Body.Mercury, name: 'Mercury', color: 0xb0b0b0, radius: 0.018, aAU: 0.387 },
-    { body: Body.Venus, name: 'Venus', color: 0xe7c27c, radius: 0.026, aAU: 0.723 },
-    { body: Body.Earth, name: 'Earth', color: 0x5aa9ff, radius: 0.028, aAU: 1.0 },
-    { body: Body.Mars, name: 'Mars', color: 0xff7760, radius: 0.022, aAU: 1.524 },
-    { body: Body.Jupiter, name: 'Jupiter', color: 0xd9b38c, radius: 0.055, aAU: 5.203 },
-    { body: Body.Saturn, name: 'Saturn', color: 0xe8d39a, radius: 0.050, aAU: 9.537 },
-    { body: Body.Uranus, name: 'Uranus', color: 0x9ad8e8, radius: 0.040, aAU: 19.191 },
-    { body: Body.Neptune, name: 'Neptune', color: 0x6f89ff, radius: 0.040, aAU: 30.07 },
+    { body: Body.Mercury, name: 'Mercury', color: 0xb0b0b0, radius: 0.035, aAU: 0.387 },
+    { body: Body.Venus,   name: 'Venus',   color: 0xe7c27c, radius: 0.050, aAU: 0.723 },
+    { body: Body.Earth,   name: 'Earth',   color: 0x5aa9ff, radius: 0.055, aAU: 1.0 },
+    { body: Body.Mars,    name: 'Mars',    color: 0xff7760, radius: 0.040, aAU: 1.524 },
+    { body: Body.Jupiter, name: 'Jupiter', color: 0xd9b38c, radius: 0.090, aAU: 5.203 },
+    { body: Body.Saturn,  name: 'Saturn',  color: 0xe8d39a, radius: 0.080, aAU: 9.537 },
+    { body: Body.Uranus,  name: 'Uranus',  color: 0x9ad8e8, radius: 0.070, aAU: 19.191 },
+    { body: Body.Neptune, name: 'Neptune', color: 0x6f89ff, radius: 0.070, aAU: 30.07 },
   ]
 
   // Trails: short fading path behind each planet
@@ -346,7 +346,7 @@ function buildSolarPanel(panel: Panel) {
 
   // Moon (shown near Earth, with exaggerated distance)
   const moon = new THREE.Mesh(
-    new THREE.SphereGeometry(0.010, 20, 20),
+    new THREE.SphereGeometry(0.015, 20, 20),
     new THREE.MeshStandardMaterial({ color: 0xd6d6d6, roughness: 1, metalness: 0 })
   )
   scene.add(moon)
@@ -398,8 +398,8 @@ function buildSolarPanel(panel: Panel) {
   scene.add(axes)
 
   controls.target.set(0, 0, 0)
-  controls.minDistance = 0.8
-  controls.maxDistance = 80
+  controls.minDistance = 0.6
+  controls.maxDistance = 40
 
   panel.onFrame = (t) => {
     // Place planets (flatten to XZ plane for legibility) + record trails
@@ -439,7 +439,7 @@ function buildSolarPanel(panel: Panel) {
     ])
   }
 
-  camera.position.set(0, 10, 12)
+  camera.position.set(0, 7, 9)
   camera.lookAt(0, 0, 0)
 }
 
@@ -460,15 +460,32 @@ function buildUniversePanel(panel: Panel) {
   const GALAXY_POINTS = 2000
   const positions = new Float32Array(GALAXY_POINTS * 3)
 
-  // Simple fake “cosmic web”: points in a clumpy disc
+  // Simple fake 3D “cosmic web”: clumpy sphere with filaments
   for (let i = 0; i < GALAXY_POINTS; i++) {
-    const r = Math.pow(Math.random(), 0.6) * 8 // dense center, sparser outskirts
-    const angle = Math.random() * Math.PI * 2
-    const height = (Math.random() - 0.5) * 1.5
+    // radius biased toward shell, not center
+    const u = Math.random()
+    const r = Math.pow(u, 0.4) * 8
 
-    positions[3 * i + 0] = r * Math.cos(angle)
-    positions[3 * i + 1] = height
-    positions[3 * i + 2] = r * Math.sin(angle)
+    // random direction on a sphere
+    const theta = Math.acos(2 * Math.random() - 1)
+    const phi = Math.random() * 2 * Math.PI
+
+    let x = r * Math.sin(theta) * Math.cos(phi)
+    let y = r * Math.cos(theta)
+    let z = r * Math.sin(theta) * Math.sin(phi)
+
+    // Occasional “filament” stretching along one axis
+    if (Math.random() < 0.2) {
+      const stretch = 1 + Math.random() * 2
+      const axis = Math.floor(Math.random() * 3)
+      if (axis === 0) x *= stretch
+      else if (axis === 1) y *= stretch
+      else z *= stretch
+    }
+
+    positions[3 * i + 0] = x
+    positions[3 * i + 1] = y
+    positions[3 * i + 2] = z
   }
   galaxyGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3))
 
