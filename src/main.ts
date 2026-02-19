@@ -502,7 +502,7 @@ function buildUniversePanel(panel: Panel, getCosmicAgeGyr: () => number) {
   panel.onFrame = () => {
     // Cosmic age slider defines age in Gyr, 0.1..13.8
     const ageGyr = getCosmicAgeGyr()
-    const tNorm = Math.min(1, Math.max(0, ageGyr / 13.8))
+    const tNorm = Math.min(1, Math.max(0, ageGyr / 30))
 
     // Very rough toy mapping: early universe ~ matter dominated (a ~ t^(2/3)),
     // late times ~ lambda dominated (accelerating). We blend two curves.
@@ -530,6 +530,8 @@ function buildUniversePanel(panel: Panel, getCosmicAgeGyr: () => number) {
     else if (ageGyr < 1.5) epochLabel = 'first galaxies'
     else if (ageGyr < 5) epochLabel = 'peak star formation'
     else if (ageGyr < 10) epochLabel = 'maturing cosmic web'
+    else if (ageGyr < 20) epochLabel = 'dark energy era'
+    else epochLabel = 'far future (Λ-dominated)'
 
     textOverlay(overlay, [
       '<b>Universe (conceptual, ΛCDM-ish)</b>',
@@ -602,7 +604,7 @@ async function main() {
 
   const universeFolder = gui.addFolder('Universe')
   universeFolder
-    .add(params, 'cosmicAgeGyr', 0.1, 13.8, 0.1)
+    .add(params, 'cosmicAgeGyr', 0.1, 40, 0.1)
     .name('age (Gyr)')
   universeFolder.close()
 
