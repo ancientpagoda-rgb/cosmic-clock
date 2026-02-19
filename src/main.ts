@@ -171,14 +171,13 @@ async function buildEarthPanel(
   const overlay = panel.root.querySelector<HTMLElement>('.overlay')!
 
   // Texture prime meridian offset (depends on the texture). We'll expose this via GUI.
-  // (0 means: texture seam/origin as-is.)
-  const textureOffsetDeg = 0
+  // Default to 180° to better align day/night with the current texture.
+  const textureOffsetDeg = 180
 
   panel.onFrame = (t) => {
-    // Sun direction (from Earth to Sun) for lighting.
-    // GeoVector() gives an Earth-centered *equatorial* vector toward the Sun.
+    // Sun direction: GeoVector(Sun) returns a vector from Sun to Earth; invert it to get Earth->Sun.
     const gv = GeoVector(Body.Sun, t.sim, true)
-    const sunDir = unit(astroToThreeVec(gv, 1))
+    const sunDir = unit(astroToThreeVec({ x: -gv.x, y: -gv.y, z: -gv.z }, 1))
     sunLight.position.copy(sunDir.multiplyScalar(5))
 
     // Earth orientation: rotate Earth-fixed longitudes into the same equatorial frame as the Sun vector.
