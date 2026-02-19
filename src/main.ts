@@ -442,7 +442,7 @@ function buildSolarPanel(panel: Panel) {
   camera.lookAt(0, 0, 0)
 }
 
-function buildUniversePanel(panel: Panel) {
+function buildUniversePanel(panel: Panel, getCosmicAgeGyr: () => number) {
   const { scene, camera, controls } = panel
 
   scene.background = new THREE.Color('#020309')
@@ -499,33 +499,45 @@ function buildUniversePanel(panel: Panel) {
   camera.position.set(0, 12, 16)
   camera.lookAt(0, 0, 0)
 
-  panel.onFrame = (t) => {
-    // Map sim time to a pseudo “scale factor” 0.2–1.0 over a 200-year window
-    const baseYear = 2000
-    const simYear = t.sim.getUTCFullYear()
-    const deltaYears = simYear - baseYear
-    const a = Math.min(1, Math.max(0.2, 0.2 + (deltaYears / 200) * 0.8))
+  panel.onFrame = () => {
+    // Cosmic age slider defines age in Gyr, 0.1..13.8
+    const ageGyr = getCosmicAgeGyr()
+    const tNorm = Math.min(1, Math.max(0, ageGyr / 13.8))
 
-    const scale = a
+    // Very rough toy mapping: early universe ~ matter dominated (a ~ t^(2/3)),
+    // late times ~ lambda dominated (accelerating). We blend two curves.
+    const aMatter = Math.pow(tNorm, 2 / 3)
+    const aLambda = Math.exp((tNorm - 1) * 0.7) // gentle late-time boost
+    const a = Math.min(1, Math.max(0.01, 0.6 * aMatter + 0.4 * aLambda))
+
+    const z = 1 / a - 1
+
+    // Use scale factor to adjust size and brightness
+    const scale = 0.5 + a * 0.8
     galaxy.scale.set(scale, scale, scale)
 
-    // Slow rotation
-    const rot = (t.sim.getTime() / (1000 * 60 * 60 * 24 * 30)) % (2 * Math.PI)
+    // Fade structures in over time
+    const opacity = 0.2 + 0.6 * a
+    starsMaterial.opacity = opacity
+
+    // Slow rotation in comoving coordinates
+    const rot = performance.now() / 10000
     galaxy.rotation.y = rot
 
-    const epochLabel =
-      deltaYears < -100
-        ? 'early universe (conceptual)'
-        : deltaYears > 100
-        ? 'late universe (conceptual)'
-        : 'near “today”'
+    // Very rough epoch labeling by redshift / age
+    let epochLabel = 'late universe'
+    if (ageGyr < 0.5) epochLabel = 'recombination / dark ages'
+    else if (ageGyr < 1.5) epochLabel = 'first galaxies'
+    else if (ageGyr < 5) epochLabel = 'peak star formation'
+    else if (ageGyr < 10) epochLabel = 'maturing cosmic web'
 
     textOverlay(overlay, [
-      '<b>Universe (conceptual)</b>',
-      `Sim time: ${formatTime(t.sim)} UTC`,
-      `Pseudo scale factor a(t): ${a.toFixed(3)}`,
+      '<b>Universe (conceptual, ΛCDM-ish)</b>',
+      `Cosmic age ≈ ${ageGyr.toFixed(2)} Gyr`,
+      `Scale factor a(t) ≈ ${a.toFixed(3)}`,
+      `Redshift z ≈ ${z.toFixed(2)}`,
       `Epoch: ${epochLabel}`,
-      'Note: visualization is artistic, not physically exact.',
+      'Note: structure + evolution are illustrative, not a full simulation.',
     ])
   }
 }
@@ -566,7 +578,8 @@ async function main() {
     resetNow: () => time.resetNow(),
     lat: DEFAULT_LAT,
     lon: DEFAULT_LON,
-    earthTextureOffsetDeg: 0,
+    earthTextureOffsetDeg: 180,
+    cosmicAgeGyr: 13.8,
   }
 
   const gui = new GUI({ title: 'Cosmic Clock' })
@@ -586,6 +599,12 @@ async function main() {
     .add(params, 'earthTextureOffsetDeg', -180, 180, 0.1)
     .name('texture offset (deg)')
   earthFolder.close()
+
+  const universeFolder = gui.addFolder('Universe')
+  universeFolder
+    .add(params, 'cosmicAgeGyr', 0.1, 13.8, 0.1)
+    .name('age (Gyr)')
+  universeFolder.close()
 
   const locFolder = gui.addFolder('Location')
   locFolder.add(params, 'lat', -90, 90, 0.0001)
@@ -608,7 +627,7 @@ async function main() {
     getTextureOffsetDeg: () => params.earthTextureOffsetDeg,
   } as any)
   buildSolarPanel(panels[1])
-  buildUniversePanel(panels[2])
+  buildUniversePanel(panels[2], () => params.cosmicAgeGyr)
 
   const ro = new ResizeObserver(() => panels.forEach((p) => p.onResize()))
   panels.forEach((p) => ro.observe(p.root))
