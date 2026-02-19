@@ -269,6 +269,18 @@ function buildSolarPanel(panel: Panel) {
     { body: Body.Neptune, name: 'Neptune', color: 0x6f89ff, radius: 0.040, aAU: 30.07 },
   ]
 
+  // Trails: short fading path behind each planet
+  type Trail = {
+    positions: Float32Array
+    geom: THREE.BufferGeometry
+    line: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>
+    index: number
+    count: number
+  }
+
+  const TRAIL_POINTS = 512
+  const trails = new Map<Body, Trail>()
+
   // Orbit rings (flat ecliptic plane for readability)
   for (const b of bodies) {
     const ring = new THREE.Mesh(
@@ -288,6 +300,48 @@ function buildSolarPanel(panel: Panel) {
     )
     scene.add(mesh)
     planetMeshes.set(b.body, mesh)
+  }
+
+  // Trail lines
+  for (const b of bodies) {
+    const positions = new Float32Array(TRAIL_POINTS * 3)
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    geom.setDrawRange(0, 0)
+
+    const mat = new THREE.LineBasicMaterial({
+      color: 0x90a4ae,
+      transparent: true,
+      opacity: 0.35,
+    })
+
+    const line = new THREE.Line(geom, mat)
+    scene.add(line)
+
+    trails.set(b.body, {
+      positions,
+      geom,
+      line,
+      index: 0,
+      count: 0,
+    })
+  }
+
+  function pushTrail(body: Body, pos: THREE.Vector3) {
+    const trail = trails.get(body)
+    if (!trail) return
+    const { positions, geom } = trail
+
+    const i = trail.index
+    positions[3 * i + 0] = pos.x
+    positions[3 * i + 1] = pos.y
+    positions[3 * i + 2] = pos.z
+
+    trail.index = (i + 1) % TRAIL_POINTS
+    trail.count = Math.min(TRAIL_POINTS, trail.count + 1)
+
+    geom.setDrawRange(0, trail.count)
+    geom.attributes.position.needsUpdate = true
   }
 
   // Moon (shown near Earth, with exaggerated distance)
@@ -348,12 +402,14 @@ function buildSolarPanel(panel: Panel) {
   controls.maxDistance = 80
 
   panel.onFrame = (t) => {
-    // Place planets (flatten to XZ plane for legibility)
+    // Place planets (flatten to XZ plane for legibility) + record trails
     for (const b of bodies) {
       const hv = HelioVector(b.body, t.sim) // AU
       const p = astroToThreeVec(hv, AU)
       const mesh = planetMeshes.get(b.body)!
       mesh.position.set(p.x, 0, p.y)
+
+      pushTrail(b.body, mesh.position)
     }
 
     const earthMesh = planetMeshes.get(Body.Earth)!
@@ -363,7 +419,11 @@ function buildSolarPanel(panel: Panel) {
     const moonVec = GeoVector(Body.Moon, t.sim, true) // AU from Earth center
     const moonP = astroToThreeVec(moonVec, AU)
     const moonExaggeration = 60
-    moon.position.copy(earthMesh.position.clone().add(new THREE.Vector3(moonP.x, 0, moonP.y).multiplyScalar(moonExaggeration)))
+    moon.position.copy(
+      earthMesh.position
+        .clone()
+        .add(new THREE.Vector3(moonP.x, 0, moonP.y).multiplyScalar(moonExaggeration))
+    )
 
     // Overlay
     const earthR = earthMesh.position.length()
@@ -383,7 +443,76 @@ function buildSolarPanel(panel: Panel) {
   camera.lookAt(0, 0, 0)
 }
 
-// (Milky Way panel removed)
+function buildUniversePanel(panel: Panel) {
+  const { scene, camera, controls } = panel
+
+  scene.background = new THREE.Color('#020309')
+
+  const starsMaterial = new THREE.PointsMaterial({
+    color: 0xffffff,
+    size: 0.02,
+    sizeAttenuation: true,
+    transparent: true,
+    opacity: 0.8,
+  })
+
+  const galaxyGeom = new THREE.BufferGeometry()
+  const GALAXY_POINTS = 2000
+  const positions = new Float32Array(GALAXY_POINTS * 3)
+
+  // Simple fake “cosmic web”: points in a clumpy disc
+  for (let i = 0; i < GALAXY_POINTS; i++) {
+    const r = Math.pow(Math.random(), 0.6) * 8 // dense center, sparser outskirts
+    const angle = Math.random() * Math.PI * 2
+    const height = (Math.random() - 0.5) * 1.5
+
+    positions[3 * i + 0] = r * Math.cos(angle)
+    positions[3 * i + 1] = height
+    positions[3 * i + 2] = r * Math.sin(angle)
+  }
+  galaxyGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+
+  const galaxy = new THREE.Points(galaxyGeom, starsMaterial)
+  scene.add(galaxy)
+
+  const overlay = panel.root.querySelector<HTMLElement>('.overlay')!
+
+  controls.target.set(0, 0, 0)
+  controls.minDistance = 4
+  controls.maxDistance = 40
+  camera.position.set(0, 12, 16)
+  camera.lookAt(0, 0, 0)
+
+  panel.onFrame = (t) => {
+    // Map sim time to a pseudo “scale factor” 0.2–1.0 over a 200-year window
+    const baseYear = 2000
+    const simYear = t.sim.getUTCFullYear()
+    const deltaYears = simYear - baseYear
+    const a = Math.min(1, Math.max(0.2, 0.2 + (deltaYears / 200) * 0.8))
+
+    const scale = a
+    galaxy.scale.set(scale, scale, scale)
+
+    // Slow rotation
+    const rot = (t.sim.getTime() / (1000 * 60 * 60 * 24 * 30)) % (2 * Math.PI)
+    galaxy.rotation.y = rot
+
+    const epochLabel =
+      deltaYears < -100
+        ? 'early universe (conceptual)'
+        : deltaYears > 100
+        ? 'late universe (conceptual)'
+        : 'near “today”'
+
+    textOverlay(overlay, [
+      '<b>Universe (conceptual)</b>',
+      `Sim time: ${formatTime(t.sim)} UTC`,
+      `Pseudo scale factor a(t): ${a.toFixed(3)}`,
+      `Epoch: ${epochLabel}`,
+      'Note: visualization is artistic, not physically exact.',
+    ])
+  }
+}
 
 function makePanelShell(parent: HTMLElement, title: string) {
   const shell = document.createElement('section')
@@ -411,6 +540,7 @@ async function main() {
 
   const earthShell = makePanelShell(panelsRoot, 'Earth')
   const solarShell = makePanelShell(panelsRoot, 'Solar System')
+  const universeShell = makePanelShell(panelsRoot, 'Universe')
 
   const time = new TimeController()
 
@@ -425,11 +555,20 @@ async function main() {
 
   const gui = new GUI({ title: 'Cosmic Clock' })
   gui.add(params, 'paused').onChange((v: boolean) => (time.paused = v))
-  gui.add(params, 'speed', { '1× (real time)': 1, '60× (1 min/sec)': 60, '3600× (1 hr/sec)': 3600, '86400× (1 day/sec)': 86400 }).onChange((v: number) => (time.speed = v))
+  gui
+    .add(params, 'speed', {
+      '1× (real time)': 1,
+      '60× (1 min/sec)': 60,
+      '3600× (1 hr/sec)': 3600,
+      '86400× (1 day/sec)': 86400,
+    })
+    .onChange((v: number) => (time.speed = v))
   gui.add(params, 'resetNow')
 
   const earthFolder = gui.addFolder('Earth')
-  earthFolder.add(params, 'earthTextureOffsetDeg', -180, 180, 0.1).name('texture offset (deg)')
+  earthFolder
+    .add(params, 'earthTextureOffsetDeg', -180, 180, 0.1)
+    .name('texture offset (deg)')
   earthFolder.close()
 
   const locFolder = gui.addFolder('Location')
@@ -437,14 +576,13 @@ async function main() {
   locFolder.add(params, 'lon', -180, 180, 0.0001)
   locFolder.close()
 
-  // (Milky Way panel removed)
-
   time.paused = params.paused
   time.speed = params.speed
 
   const panels: Panel[] = [
     makePanel('earth', earthShell),
     makePanel('solar', solarShell),
+    makePanel('universe', universeShell),
   ]
 
   await buildEarthPanel(panels[0], {
@@ -454,6 +592,7 @@ async function main() {
     getTextureOffsetDeg: () => params.earthTextureOffsetDeg,
   } as any)
   buildSolarPanel(panels[1])
+  buildUniversePanel(panels[2])
 
   const ro = new ResizeObserver(() => panels.forEach((p) => p.onResize()))
   panels.forEach((p) => ro.observe(p.root))
