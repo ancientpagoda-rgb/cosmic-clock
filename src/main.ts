@@ -1,4 +1,5 @@
 import './style.css'
+import './lil-gui-overrides.css'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import GUI from 'lil-gui'
@@ -125,6 +126,7 @@ async function buildEarthPanel(
     getLon: () => number
     getLabel?: () => string
     getTextureOffsetDeg?: () => number
+    getWeatherLines?: () => string[]
   }
 ) {
   const { scene, camera, controls } = panel
@@ -217,12 +219,15 @@ async function buildEarthPanel(
 
     const daylight = hor.altitude > 0
 
+    const weatherLines = opts.getWeatherLines ? opts.getWeatherLines() : []
+
     textOverlay(overlay, [
       `<b>${label}</b>`,
       `Local time: ${formatTime(t.now)}`,
       `Sim time: ${formatTime(t.sim)}`,
       `Sun alt/az: ${hor.altitude.toFixed(1)}° / ${hor.azimuth.toFixed(1)}°`,
       `Lawrence: ${daylight ? 'daylight' : 'night'}`,
+      ...weatherLines,
     ])
   }
 
@@ -544,6 +549,79 @@ function buildUniversePanel(panel: Panel, getCosmicAgeGyr: () => number) {
   }
 }
 
+type WeatherState = {
+  enabled: boolean
+  lastFetchMs: number
+  inflight: boolean
+  lat: number
+  lon: number
+  tempC?: number
+  windKph?: number
+  code?: number
+  isDay?: boolean
+  updatedAt?: Date
+  error?: string
+}
+
+function weatherCodeLabel(code: number | undefined) {
+  if (code == null) return 'Unknown'
+  // Open-Meteo weathercode mapping (subset)
+  if (code === 0) return 'Clear'
+  if (code === 1) return 'Mostly clear'
+  if (code === 2) return 'Partly cloudy'
+  if (code === 3) return 'Overcast'
+  if (code === 45 || code === 48) return 'Fog'
+  if (code === 51 || code === 53 || code === 55) return 'Drizzle'
+  if (code === 61 || code === 63 || code === 65) return 'Rain'
+  if (code === 66 || code === 67) return 'Freezing rain'
+  if (code === 71 || code === 73 || code === 75) return 'Snow'
+  if (code === 77) return 'Snow grains'
+  if (code === 80 || code === 81 || code === 82) return 'Showers'
+  if (code === 85 || code === 86) return 'Snow showers'
+  if (code === 95) return 'Thunderstorm'
+  if (code === 96 || code === 99) return 'Thunderstorm + hail'
+  return `Code ${code}`
+}
+
+async function maybeFetchWeather(state: WeatherState, lat: number, lon: number, force = false) {
+  if (!state.enabled) return
+  const t = performance.now()
+  const intervalMs = 10 * 60 * 1000 // 10 minutes
+
+  const moved = Math.abs(state.lat - lat) + Math.abs(state.lon - lon) > 0.001
+  if (moved) {
+    state.lat = lat
+    state.lon = lon
+    state.updatedAt = undefined
+    state.lastFetchMs = 0
+  }
+
+  if (state.inflight) return
+  if (!force && t - state.lastFetchMs < intervalMs && state.updatedAt) return
+
+  state.inflight = true
+  state.error = undefined
+
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&current=temperature_2m,weather_code,wind_speed_10m,is_day&wind_speed_unit=kmh&temperature_unit=celsius`
+
+  try {
+    const res = await fetch(url, { cache: 'no-store' })
+    if (!res.ok) throw new Error(`Weather fetch failed: ${res.status}`)
+    const json = await res.json()
+    const cur = json.current
+    state.tempC = typeof cur?.temperature_2m === 'number' ? cur.temperature_2m : undefined
+    state.windKph = typeof cur?.wind_speed_10m === 'number' ? cur.wind_speed_10m : undefined
+    state.code = typeof cur?.weather_code === 'number' ? cur.weather_code : undefined
+    state.isDay = cur?.is_day === 1
+    state.updatedAt = new Date()
+    state.lastFetchMs = t
+  } catch (e) {
+    state.error = e instanceof Error ? e.message : String(e)
+  } finally {
+    state.inflight = false
+  }
+}
+
 function makePanelShell(parent: HTMLElement, title: string) {
   const shell = document.createElement('section')
   shell.className = 'panel'
@@ -574,14 +652,33 @@ async function main() {
 
   const time = new TimeController()
 
+  const weather: WeatherState = {
+    enabled: true,
+    lastFetchMs: 0,
+    inflight: false,
+    lat: DEFAULT_LAT,
+    lon: DEFAULT_LON,
+  }
+
   const params = {
     paused: false,
     speed: 1,
     resetNow: () => time.resetNow(),
     lat: DEFAULT_LAT,
     lon: DEFAULT_LON,
+
+    // Earth
     earthTextureOffsetDeg: 180,
+
+    // Universe panel
     cosmicAgeGyr: 13.8,
+
+    // Weather
+    weather: true,
+    refreshWeather: () => {
+      weather.lastFetchMs = 0
+      void maybeFetchWeather(weather, params.lat, params.lon, true)
+    },
   }
 
   const gui = new GUI({ title: 'Cosmic Clock' })
@@ -609,10 +706,24 @@ async function main() {
   universeFolder.close()
 
   const locFolder = gui.addFolder('Location')
-  locFolder.add(params, 'lat', -90, 90, 0.0001)
-  locFolder.add(params, 'lon', -180, 180, 0.0001)
+  locFolder
+    .add(params, 'lat', -90, 90, 0.0001)
+    .onChange(() => void maybeFetchWeather(weather, params.lat, params.lon, true))
+  locFolder
+    .add(params, 'lon', -180, 180, 0.0001)
+    .onChange(() => void maybeFetchWeather(weather, params.lat, params.lon, true))
   locFolder.close()
 
+  const weatherFolder = gui.addFolder('Weather')
+  weatherFolder
+    .add(params, 'weather')
+    .name('enable')
+    .onChange((v: boolean) => {
+      weather.enabled = v
+      if (v) void maybeFetchWeather(weather, params.lat, params.lon, true)
+    })
+  weatherFolder.add(params, 'refreshWeather').name('refresh now')
+  weatherFolder.close()
   time.paused = params.paused
   time.speed = params.speed
 
@@ -627,6 +738,16 @@ async function main() {
     getLon: () => params.lon,
     getLabel: () => `Earth (Lawrence, KS)`,
     getTextureOffsetDeg: () => params.earthTextureOffsetDeg,
+    getWeatherLines: () => {
+      if (!params.weather) return ['Weather: (disabled)']
+      if (weather.error) return [`Weather: error (${weather.error})`]
+      if (!weather.updatedAt) return [weather.inflight ? 'Weather: loading…' : 'Weather: (not loaded yet)']
+      const desc = weatherCodeLabel(weather.code)
+      const temp = weather.tempC != null ? `${weather.tempC.toFixed(1)}°C` : '—'
+      const wind = weather.windKph != null ? `${weather.windKph.toFixed(0)} km/h` : '—'
+      const asOf = weather.updatedAt ? `${weather.updatedAt.getHours().toString().padStart(2,'0')}:${weather.updatedAt.getMinutes().toString().padStart(2,'0')}` : '—'
+      return [`Weather: ${desc} · ${temp} · wind ${wind} (as of ${asOf})`]
+    },
   } as any)
   buildSolarPanel(panels[1])
   buildUniversePanel(panels[2], () => params.cosmicAgeGyr)
@@ -635,8 +756,15 @@ async function main() {
   panels.forEach((p) => ro.observe(p.root))
   panels.forEach((p) => p.onResize())
 
+  // Kick off first weather fetch
+  weather.enabled = params.weather
+  void maybeFetchWeather(weather, params.lat, params.lon, true)
+
   function frame() {
     const t = time.tick()
+
+    // refresh weather occasionally (based on real time)
+    void maybeFetchWeather(weather, params.lat, params.lon)
 
     for (const p of panels) {
       p.controls.update()

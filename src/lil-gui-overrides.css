@@ -1,0 +1,19 @@
+/* Move lil-gui to lower-right */
+.lil-gui {
+  position: fixed !important;
+  right: 12px !important;
+  left: auto !important;
+  bottom: 12px !important;
+  top: auto !important;
+  z-index: 9999 !important;
+}
+
+/* Keep it usable on small screens */
+@media (max-width: 520px) {
+  .lil-gui {
+    right: 6px !important;
+    bottom: 6px !important;
+    max-height: 55vh;
+    overflow: auto;
+  }
+}
