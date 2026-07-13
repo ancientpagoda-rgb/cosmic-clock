@@ -16,6 +16,7 @@ import {
 // Lawrence, KS
 const DEFAULT_LAT = 38.9717
 const DEFAULT_LON = -95.2353
+const OBLIQUITY_RAD = (23.439292 * Math.PI) / 180
 
 type Panel = {
   name: string
@@ -117,6 +118,17 @@ function astroToThreeVec(v: { x: number; y: number; z: number }, scale = 1) {
   // Three.js is typically Y-up, so map astro Z -> three Y.
   // We also map astro Y -> three Z to keep a right-handed system.
   return new THREE.Vector3(v.x * scale, v.z * scale, v.y * scale)
+}
+
+function helioToEclipticPlane(v: { x: number; y: number; z: number }, scale = 1) {
+  // astronomy-engine heliocentric vectors are equatorial. Rotate by Earth's
+  // obliquity so the Solar System panel is a top-down ecliptic view.
+  const eclipticY = v.y * Math.cos(OBLIQUITY_RAD) + v.z * Math.sin(OBLIQUITY_RAD)
+  return new THREE.Vector3(v.x * scale, 0, eclipticY * scale)
+}
+
+function vectorLength(v: { x: number; y: number; z: number }, scale = 1) {
+  return Math.hypot(v.x, v.y, v.z) * scale
 }
 
 async function buildEarthPanel(
@@ -407,11 +419,13 @@ function buildSolarPanel(panel: Panel) {
 
   panel.onFrame = (t) => {
     // Place planets (flatten to XZ plane for legibility) + record trails
+    let earthDistanceAU = 0
     for (const b of bodies) {
       const hv = HelioVector(b.body, t.sim) // AU
-      const p = astroToThreeVec(hv, AU)
+      const p = helioToEclipticPlane(hv, AU)
       const mesh = planetMeshes.get(b.body)!
-      mesh.position.set(p.x, 0, p.y)
+      mesh.position.copy(p)
+      if (b.body === Body.Earth) earthDistanceAU = vectorLength(hv, AU)
 
       pushTrail(b.body, mesh.position)
     }
@@ -421,23 +435,22 @@ function buildSolarPanel(panel: Panel) {
     // Moon position: geocentric vector from Earth to Moon.
     // We exaggerate the distance so it's visible at AU scale.
     const moonVec = GeoVector(Body.Moon, t.sim, true) // AU from Earth center
-    const moonP = astroToThreeVec(moonVec, AU)
+    const moonP = helioToEclipticPlane(moonVec, AU)
     const moonExaggeration = 60
     moon.position.copy(
       earthMesh.position
         .clone()
-        .add(new THREE.Vector3(moonP.x, 0, moonP.y).multiplyScalar(moonExaggeration))
+        .add(moonP.multiplyScalar(moonExaggeration))
     )
 
     // Overlay
-    const earthR = earthMesh.position.length()
     const theta = Math.atan2(earthMesh.position.z, earthMesh.position.x)
     const deg = (theta * 180) / Math.PI
 
     textOverlay(overlay, [
       `<b>Solar System (planets + Moon)</b>`,
       `Sim time: ${formatTime(t.sim)}`,
-      `Earth–Sun distance: ${earthR.toFixed(3)} AU`,
+      `Earth–Sun distance: ${earthDistanceAU.toFixed(3)} AU`,
       `Earth orbit angle (approx): ${deg.toFixed(1)}°`,
       `Moon distance exaggerated: ×${moonExaggeration}`,
     ])
