@@ -17,6 +17,14 @@ import {
 const DEFAULT_LAT = 38.9717
 const DEFAULT_LON = -95.2353
 const OBLIQUITY_RAD = (23.439292 * Math.PI) / 180
+const DEFAULT_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'browser time'
+
+const LCDM = {
+  omegaMatter: 0.315,
+  omegaLambda: 0.685,
+  // Planck-like H0 ~= 67.4 km/s/Mpc converted to inverse gigayears.
+  hubblePerGyr: 1 / (9.778 / 0.674),
+}
 
 type Panel = {
   name: string
@@ -107,6 +115,12 @@ function formatTime(d: Date) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
+function formatLocationLabel(lat: number, lon: number) {
+  const isDefault =
+    Math.abs(lat - DEFAULT_LAT) < 0.0001 && Math.abs(lon - DEFAULT_LON) < 0.0001
+  return isDefault ? 'Earth (Lawrence, KS)' : `Earth (${lat.toFixed(4)}, ${lon.toFixed(4)})`
+}
+
 function unit(v: THREE.Vector3) {
   const out = v.clone()
   if (out.lengthSq() > 0) out.normalize()
@@ -129,6 +143,13 @@ function helioToEclipticPlane(v: { x: number; y: number; z: number }, scale = 1)
 
 function vectorLength(v: { x: number; y: number; z: number }, scale = 1) {
   return Math.hypot(v.x, v.y, v.z) * scale
+}
+
+function lcdmScaleFactor(ageGyr: number) {
+  const { omegaMatter, omegaLambda, hubblePerGyr } = LCDM
+  const lambdaMatterRatio = Math.sqrt(omegaLambda / omegaMatter)
+  const sinhTerm = Math.sinh(1.5 * hubblePerGyr * Math.sqrt(omegaLambda) * ageGyr)
+  return Math.max(1e-6, Math.pow(sinhTerm / lambdaMatterRatio, 2 / 3))
 }
 
 async function buildEarthPanel(
@@ -157,6 +178,7 @@ async function buildEarthPanel(
   const dayTex = await new THREE.TextureLoader().loadAsync(dayUrl)
   dayTex.colorSpace = THREE.SRGBColorSpace
   dayTex.anisotropy = 8
+  dayTex.wrapS = THREE.RepeatWrapping
 
   const earth = new THREE.Mesh(
     new THREE.SphereGeometry(1, 96, 96),
@@ -189,9 +211,10 @@ async function buildEarthPanel(
   const textureOffsetDeg = 180
 
   panel.onFrame = (t) => {
-    // Sun direction: GeoVector(Sun) returns a vector from Sun to Earth; invert it to get Earth->Sun.
+    // GeoVector(Sun) is the geocentric Earth->Sun vector. Keep this direction
+    // so the lit hemisphere agrees with Astronomy Engine's local altitude.
     const gv = GeoVector(Body.Sun, t.sim, true)
-    const sunDir = unit(astroToThreeVec({ x: -gv.x, y: -gv.y, z: -gv.z }, 1))
+    const sunDir = unit(astroToThreeVec(gv, 1))
     sunLight.position.copy(sunDir.multiplyScalar(5))
 
     // Earth orientation: rotate Earth-fixed longitudes into the same equatorial frame as the Sun vector.
@@ -200,14 +223,14 @@ async function buildEarthPanel(
     const gstRad = (gstHours * 15 * Math.PI) / 180
 
     const texOff = opts.getTextureOffsetDeg ? opts.getTextureOffsetDeg() : textureOffsetDeg
-    const offRad = (texOff * Math.PI) / 180
+    dayTex.offset.x = texOff / 360
 
     earth.rotation.set(0, 0, 0)
     atmo.rotation.set(0, 0, 0)
 
     // Sign: negative so increasing sidereal time rotates Earth eastward under the inertial sky.
-    earth.rotation.y = -gstRad + offRad
-    atmo.rotation.y = -gstRad + offRad
+    earth.rotation.y = -gstRad
+    atmo.rotation.y = -gstRad
 
     // Place marker at lat/lon (Lawrence, KS by default)
     const lat = opts.getLat()
@@ -235,10 +258,10 @@ async function buildEarthPanel(
 
     textOverlay(overlay, [
       `<b>${label}</b>`,
-      `Local time: ${formatTime(t.now)}`,
-      `Sim time: ${formatTime(t.sim)}`,
+      `Clock time: ${formatTime(t.now)} (${DEFAULT_TIME_ZONE})`,
+      `Sim time: ${formatTime(t.sim)} (${DEFAULT_TIME_ZONE})`,
       `Sun alt/az: ${hor.altitude.toFixed(1)}° / ${hor.azimuth.toFixed(1)}°`,
-      `Lawrence: ${daylight ? 'daylight' : 'night'}`,
+      `Location: ${daylight ? 'daylight' : 'night'}`,
       ...weatherLines,
     ])
   }
@@ -518,24 +541,19 @@ function buildUniversePanel(panel: Panel, getCosmicAgeGyr: () => number) {
   camera.lookAt(0, 0, 0)
 
   panel.onFrame = () => {
-    // Cosmic age slider defines age in Gyr, 0.1..13.8
+    // Cosmic age slider defines age in Gyr. Scale factor/redshift use the
+    // analytic flat matter+lambda relation, while the point cloud is illustrative.
     const ageGyr = getCosmicAgeGyr()
-    const tNorm = Math.min(1, Math.max(0, ageGyr / 30))
-
-    // Very rough toy mapping: early universe ~ matter dominated (a ~ t^(2/3)),
-    // late times ~ lambda dominated (accelerating). We blend two curves.
-    const aMatter = Math.pow(tNorm, 2 / 3)
-    const aLambda = Math.exp((tNorm - 1) * 0.7) // gentle late-time boost
-    const a = Math.min(1, Math.max(0.01, 0.6 * aMatter + 0.4 * aLambda))
-
+    const a = lcdmScaleFactor(ageGyr)
     const z = 1 / a - 1
 
-    // Use scale factor to adjust size and brightness
-    const scale = 0.5 + a * 0.8
+    // Use a compressed display scale so future expansion does not fly out of frame.
+    const displayA = Math.log1p(a) / Math.log1p(lcdmScaleFactor(13.8))
+    const scale = 0.35 + Math.min(displayA, 2.4) * 0.65
     galaxy.scale.set(scale, scale, scale)
 
     // Fade structures in over time
-    const opacity = 0.2 + 0.6 * a
+    const opacity = 0.15 + 0.65 * Math.min(1, a / lcdmScaleFactor(13.8))
     starsMaterial.opacity = opacity
 
     // Slow rotation in comoving coordinates
@@ -544,10 +562,11 @@ function buildUniversePanel(panel: Panel, getCosmicAgeGyr: () => number) {
 
     // Very rough epoch labeling by redshift / age
     let epochLabel = 'late universe'
-    if (ageGyr < 0.5) epochLabel = 'recombination / dark ages'
-    else if (ageGyr < 1.5) epochLabel = 'first galaxies'
-    else if (ageGyr < 5) epochLabel = 'peak star formation'
+    if (ageGyr < 0.18) epochLabel = 'dark ages / cosmic dawn'
+    else if (ageGyr < 1) epochLabel = 'first galaxies / reionization'
+    else if (ageGyr < 6) epochLabel = 'peak star formation era'
     else if (ageGyr < 10) epochLabel = 'maturing cosmic web'
+    else if (ageGyr < 13.8) epochLabel = 'late galaxy evolution'
     else if (ageGyr < 20) epochLabel = 'dark energy era'
     else epochLabel = 'far future (Λ-dominated)'
 
@@ -750,7 +769,7 @@ async function main() {
   await buildEarthPanel(panels[0], {
     getLat: () => params.lat,
     getLon: () => params.lon,
-    getLabel: () => `Earth (Lawrence, KS)`,
+    getLabel: () => formatLocationLabel(params.lat, params.lon),
     getTextureOffsetDeg: () => params.earthTextureOffsetDeg,
     getWeatherLines: () => {
       if (!params.weather) return ['Weather: (disabled)']

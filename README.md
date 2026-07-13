@@ -3,8 +3,8 @@
 Three real-time, 3D-zoomable diagrams:
 
 1. **Earth (Lawrence, KS)** — rotating globe + day/night lighting driven by the real Sun direction.
-2. **Solar System (inner)** — Earth’s live heliocentric position (AU) around the Sun.
-3. **Milky Way (stylized)** — Solar System plotted in a simplified galaxy view (includes a *time exaggeration* slider so motion is visible).
+2. **Solar System** — live heliocentric planet positions in AU, plus an exaggerated Moon marker near Earth.
+3. **Universe** — conceptual cosmic-web view with a cosmic-age slider and approximate flat ΛCDM scale factor/redshift readout.
 
 ## Live demo (GitHub Pages)
 After you push this repo to GitHub and enable Pages (Actions), it will deploy automatically.
@@ -35,12 +35,16 @@ npm run preview
   - time speed
   - reset to “now”
   - location (lat/lon)
-  - Milky Way time exaggeration
+  - Earth texture offset
+  - Universe age
 
 ## Notes / accuracy
-- Earth rotation is approximated as a sidereal rotation for a nice “clock feel”.
+- Earth rotation uses Greenwich sidereal time. Texture alignment is a separate visual offset so it does not change the physical Sun direction.
 - Sun direction + local Sun altitude/azimuth use `astronomy-engine`.
-- “Solar System position in the Milky Way” is **not clock-like at human timescales** (galactic orbital period is ~230 million years), so the Galaxy panel includes an exaggeration slider.
+- Solar System positions use `astronomy-engine` heliocentric vectors. Orbit rings are circular reference guides, not exact elliptical or inclined orbits.
+- The Moon is positioned from its geocentric vector, but its distance is exaggerated so it remains visible at AU scale.
+- The Universe panel uses a Planck-like flat matter+lambda approximation for `a(t)` and redshift. The point cloud, filaments, brightness, and rotation are illustrative, not a cosmological simulation.
+- Clock and sim timestamps are shown in the browser time zone; local solar altitude/daylight is computed from the configured latitude/longitude.
 
 ## Credits
 - Earth texture from Three.js examples: https://threejs.org/examples/
