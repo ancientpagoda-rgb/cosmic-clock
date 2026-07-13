@@ -6,14 +6,23 @@
   bottom: 12px !important;
   top: auto !important;
   z-index: 9999 !important;
+  width: min(245px, calc(100vw - 24px)) !important;
+  max-height: min(420px, calc(100vh - 24px));
+  overflow: auto;
+}
+
+.lil-gui .controller {
+  min-height: 26px;
+}
+
+.lil-gui button,
+.lil-gui select {
+  min-width: 0;
 }
 
 /* Keep it usable on small screens */
 @media (max-width: 520px) {
   .lil-gui {
-    right: 6px !important;
-    bottom: 6px !important;
-    max-height: 55vh;
-    overflow: auto;
+    display: none !important;
   }
 }

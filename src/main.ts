@@ -724,6 +724,7 @@ async function main() {
     })
   weatherFolder.add(params, 'refreshWeather').name('refresh now')
   weatherFolder.close()
+  gui.close()
   time.paused = params.paused
   time.speed = params.speed
 
