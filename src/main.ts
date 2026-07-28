@@ -157,6 +157,14 @@ function helioToEclipticPlane(v: { x: number; y: number; z: number }, scale = 1)
   return new THREE.Vector3(v.x * scale, 0, eclipticY * scale)
 }
 
+function helioToEclipticVec(v: { x: number; y: number; z: number }, scale = 1) {
+  // Use the actual 3D heliocentric vector, rotated into the ecliptic frame.
+  const eclX = v.x
+  const eclY = v.y * Math.cos(OBLIQUITY_RAD) + v.z * Math.sin(OBLIQUITY_RAD)
+  const eclZ = -v.y * Math.sin(OBLIQUITY_RAD) + v.z * Math.cos(OBLIQUITY_RAD)
+  return new THREE.Vector3(eclX * scale, eclZ * scale, eclY * scale)
+}
+
 function vectorLength(v: { x: number; y: number; z: number }, scale = 1) {
   return Math.hypot(v.x, v.y, v.z) * scale
 }
@@ -856,7 +864,7 @@ async function buildCombinedPanel(
     let earthDistanceAU = 0
     for (const b of bodies) {
       const hv = HelioVector(b.body, t.sim)
-      const p = helioToEclipticPlane(hv, AU * displayScale)
+      const p = helioToEclipticVec(hv, AU * displayScale)
       const group = planetGroups.get(b.body)!
       group.position.copy(p)
       if (b.body === Body.Earth) earthDistanceAU = vectorLength(hv, AU)
@@ -867,7 +875,7 @@ async function buildCombinedPanel(
     const earthMesh = planetMeshes.get(Body.Earth)!
 
     const moonVec = GeoVector(Body.Moon, t.sim, true)
-    const moonP = helioToEclipticPlane(moonVec, AU * displayScale)
+    const moonP = helioToEclipticVec(moonVec, AU * displayScale)
     const moonExaggeration = 60
     moon.position.copy(earthGroup.position.clone().add(moonP.multiplyScalar(moonExaggeration)))
 
@@ -915,18 +923,18 @@ async function buildCombinedPanel(
           <h2>Planets in motion</h2>
           <div class="card-lines">
             <div>Earth-Sun distance: ${earthDistanceAU.toFixed(3)} AU</div>
-            <div>Moon distance exaggerated: ×${moonExaggeration}</div>
-            <div>Orbit angle: ${((Math.atan2(earthGroup.position.z, earthGroup.position.x) * 180) / Math.PI).toFixed(1)}°</div>
+            <div>Earth ecliptic longitude: ${((Math.atan2(earthGroup.position.z, earthGroup.position.x) * 180) / Math.PI).toFixed(1)}°</div>
+            <div>Moon shown at ${moonExaggeration}x display scale for legibility</div>
           </div>
         </section>
         <section class="info-card info-card-universe">
           <p class="card-kicker">Universe</p>
-          <h2>Conceptual cosmic web</h2>
+          <h2>ΛCDM age model</h2>
           <div class="card-lines">
             <div>Cosmic age ≈ ${ageGyr.toFixed(2)} Gyr</div>
             <div>Scale factor a(t) ≈ ${a.toFixed(3)}</div>
             <div>Redshift z ≈ ${z.toFixed(2)}</div>
-            <div>Epoch: ${escapeHtml(epochLabel)}</div>
+            <div>Backdrop: ${escapeHtml(epochLabel)}</div>
           </div>
         </section>
       </div>
