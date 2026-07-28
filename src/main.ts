@@ -223,6 +223,7 @@ async function loadGalaxySamples() {
     samples.push({ name, distanceMpc, velocityKms })
   }
 
+  samples.sort((a, b) => a.distanceMpc - b.distanceMpc)
   return samples
 }
 
@@ -314,6 +315,81 @@ function drawMoonInset(
   ctx.lineTo(earthX + earthRadiusPx * 10, centerY + 18)
   ctx.stroke()
   ctx.fillText('10 Earth radii', earthX, centerY + 34)
+}
+
+function buildHubbleChartSvg(samples: GalaxySample[], h0Fit: number) {
+  if (samples.length === 0) {
+    return '<div class="chart-empty">No galaxy sample loaded.</div>'
+  }
+
+  const width = 300
+  const height = 92
+  const padL = 28
+  const padR = 10
+  const padT = 8
+  const padB = 18
+
+  const subsetCount = Math.min(samples.length, 150)
+  const step = Math.max(1, Math.floor(samples.length / subsetCount))
+  const subset = samples.filter((_, i) => i % step === 0).slice(0, subsetCount)
+
+  const xMax = Math.max(20, ...subset.map((s) => s.distanceMpc))
+  const yMax = Math.max(1500, ...subset.map((s) => Math.abs(s.velocityKms)))
+
+  const sx = (d: number) => padL + (d / xMax) * (width - padL - padR)
+  const sy = (v: number) => height - padB - ((v + yMax) / (2 * yMax)) * (height - padT - padB)
+  const fitY1 = sy(-h0Fit * xMax)
+  const fitY2 = sy(h0Fit * xMax)
+
+  const points = subset
+    .map((s) => {
+      const x = sx(s.distanceMpc)
+      const y = sy(s.velocityKms)
+      const density = clamp(s.distanceMpc / xMax, 0, 1)
+      const r = 1.3 + density * 0.9
+      const alpha = 0.28 + density * 0.58
+      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="rgb(170 231 255)" fill-opacity="${alpha.toFixed(3)}" />`
+    })
+    .join('')
+
+  const gridLines = [0, 0.25, 0.5, 0.75, 1]
+    .map((t) => {
+      const x = padL + t * (width - padL - padR)
+      const y = padT + t * (height - padT - padB)
+      return `
+        <line x1="${x.toFixed(1)}" y1="${padT}" x2="${x.toFixed(1)}" y2="${height - padB}" stroke="rgba(255,255,255,0.06)" />
+        <line x1="${padL}" y1="${y.toFixed(1)}" x2="${width - padR}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,0.06)" />
+      `
+    })
+    .join('')
+
+  const axis = `
+    <line x1="${padL}" y1="${height - padB}" x2="${width - padR}" y2="${height - padB}" stroke="rgba(255,255,255,0.24)" />
+    <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${height - padB}" stroke="rgba(255,255,255,0.24)" />
+  `
+
+  const line = `
+    <line x1="${padL}" y1="${fitY1.toFixed(1)}" x2="${width - padR}" y2="${fitY2.toFixed(1)}" stroke="rgb(255 204 102)" stroke-opacity="0.9" stroke-width="2" />
+  `
+
+  return `
+    <svg class="hubble-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Galaxy distance versus recession velocity chart">
+      <defs>
+        <linearGradient id="hubbleGlow" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="rgb(86 184 255)" stop-opacity="0.18" />
+          <stop offset="100%" stop-color="rgb(255 204 102)" stop-opacity="0.05" />
+        </linearGradient>
+      </defs>
+      <rect x="0" y="0" width="${width}" height="${height}" rx="14" fill="url(#hubbleGlow)" />
+      ${gridLines}
+      ${axis}
+      ${line}
+      ${points}
+      <text x="12" y="18" fill="rgba(255,255,255,0.88)" font-size="11" font-family="Avenir Next, Trebuchet MS, sans-serif">Hubble sample</text>
+      <text x="${width - 10}" y="${height - 4}" text-anchor="end" fill="rgba(255,255,255,0.58)" font-size="9" font-family="Avenir Next, Trebuchet MS, sans-serif">distance (Mpc)</text>
+      <text x="12" y="${height - 4}" fill="rgba(255,255,255,0.58)" font-size="9" font-family="Avenir Next, Trebuchet MS, sans-serif">velocity (km/s)</text>
+    </svg>
+  `
 }
 
 export async function buildEarthPanel(
@@ -981,6 +1057,16 @@ async function buildCombinedPanel(
     throw new Error('Moon inset canvas unavailable')
   }
 
+  const hubbleStrip = document.createElement('div')
+  hubbleStrip.className = 'hubble-strip'
+  hubbleStrip.innerHTML = `
+    <div class="hubble-strip-title">Hubble flow / HyperLeda sample</div>
+    <div class="hubble-strip-chart"></div>
+    <div class="hubble-strip-note">Distance modulus to distance, velocity versus distance, zero-intercept fit.</div>
+  `
+  panel.root.appendChild(hubbleStrip)
+  const hubbleStripChart = hubbleStrip.querySelector<HTMLDivElement>('.hubble-strip-chart')!
+
   const raycaster = new THREE.Raycaster()
   const mouse = new THREE.Vector2()
 
@@ -1038,9 +1124,15 @@ async function buildCombinedPanel(
     const ageGyr = opts.getCosmicAgeGyr()
     const a = lcdmScaleFactor(ageGyr)
     const z = 1 / a - 1
+    const timeSec = performance.now() / 1000
 
     galaxy.scale.set(0.82, 0.82, 0.82)
-    galaxy.rotation.y = 0.22
+    galaxy.rotation.y = 0.22 + Math.sin(timeSec * 0.03) * 0.018
+    galaxy.rotation.z = Math.sin(timeSec * 0.017) * 0.012
+    galaxyMaterial.opacity = 0.74 + Math.sin(timeSec * 0.11) * 0.04
+    backdropGroup.rotation.y = -0.28 + Math.sin(timeSec * 0.01) * 0.03
+    backdropGroup.rotation.z = Math.sin(timeSec * 0.02) * 0.02
+    sunGlow.scale.setScalar(1 + Math.sin(timeSec * 1.9) * 0.035)
 
     let epochLabel = 'late universe'
     if (ageGyr < 0.18) epochLabel = 'dark ages / cosmic dawn'
@@ -1097,6 +1189,8 @@ async function buildCombinedPanel(
 
     const moonDistanceKm = vectorLength(moonVec, AU_KM)
     const moonDistanceEarthRadii = moonDistanceKm / 6371
+    const hubbleChartSvg = buildHubbleChartSvg(galaxySamples, h0Fit)
+    hubbleStripChart.innerHTML = hubbleChartSvg
 
     overlay.innerHTML = `
       <div class="combined-overlay">
