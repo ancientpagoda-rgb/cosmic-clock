@@ -26,6 +26,8 @@ const LCDM = {
   hubblePerGyr: 1 / (9.778 / 0.674),
 }
 
+const AU_KM = 149597870.7
+
 type Panel = {
   name: string
   root: HTMLElement
@@ -174,6 +176,144 @@ function lcdmScaleFactor(ageGyr: number) {
   const lambdaMatterRatio = Math.sqrt(omegaLambda / omegaMatter)
   const sinhTerm = Math.sinh(1.5 * hubblePerGyr * Math.sqrt(omegaLambda) * ageGyr)
   return Math.max(1e-6, Math.pow(sinhTerm / lambdaMatterRatio, 2 / 3))
+}
+
+type GalaxySample = {
+  name: string
+  distanceMpc: number
+  velocityKms: number
+}
+
+function hashString(value: string) {
+  let hash = 2166136261
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}
+
+async function loadGalaxySamples() {
+  const url = `${import.meta.env.BASE_URL}data/galaxies.csv`
+  const res = await fetch(url, { cache: 'no-store' })
+  if (!res.ok) {
+    throw new Error(`Failed to load galaxy catalog: ${res.status}`)
+  }
+
+  const text = await res.text()
+  const lines = text.trim().split(/\r?\n/)
+  lines.shift()
+
+  const samples: GalaxySample[] = []
+  for (const line of lines) {
+    const [name, mod0Raw, vgsrRaw] = line.split(',')
+    const mod0 = Number(mod0Raw)
+    const velocityKms = Number(vgsrRaw)
+    if (!name || !Number.isFinite(mod0) || !Number.isFinite(velocityKms)) continue
+
+    // Distance modulus -> parsec, then to megaparsec.
+    const distanceMpc = Math.pow(10, (mod0 - 25) / 5)
+    if (!Number.isFinite(distanceMpc)) continue
+    if (distanceMpc > 250 || Math.abs(velocityKms) > 15000) continue
+
+    samples.push({ name, distanceMpc, velocityKms })
+  }
+
+  return samples
+}
+
+function drawMoonInset(
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  moonVec: { x: number; y: number; z: number }
+) {
+  const w = canvas.width
+  const h = canvas.height
+  ctx.clearRect(0, 0, w, h)
+
+  const bg = ctx.createLinearGradient(0, 0, w, h)
+  bg.addColorStop(0, 'rgba(7, 12, 24, 0.95)')
+  bg.addColorStop(1, 'rgba(3, 5, 11, 0.96)')
+  ctx.fillStyle = bg
+  ctx.fillRect(0, 0, w, h)
+
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)'
+  ctx.lineWidth = 1
+  ctx.strokeRect(0.5, 0.5, w - 1, h - 1)
+
+  const earthRadiusPx = 2.8
+  const moonRadiusPx = earthRadiusPx * (1737.4 / 6371)
+  const earthRadii = vectorLength(moonVec, AU_KM) / 6371
+  const distancePx = earthRadii * earthRadiusPx
+
+  const earthX = 58
+  const centerY = h * 0.56
+  const moonX = earthX + distancePx
+
+  // Scale ticks
+  ctx.strokeStyle = 'rgba(120, 150, 190, 0.22)'
+  ctx.beginPath()
+  for (let i = 0; i <= 6; i++) {
+    const x = earthX + i * 28
+    ctx.moveTo(x, centerY - 14)
+    ctx.lineTo(x, centerY + 14)
+  }
+  ctx.stroke()
+
+  // Earth -> Moon line
+  ctx.strokeStyle = 'rgba(153, 201, 255, 0.38)'
+  ctx.lineWidth = 1.4
+  ctx.beginPath()
+  ctx.moveTo(earthX + earthRadiusPx, centerY)
+  ctx.lineTo(moonX - moonRadiusPx, centerY)
+  ctx.stroke()
+
+  // Earth
+  const earthGlow = ctx.createRadialGradient(
+    earthX - 1,
+    centerY - 1,
+    1,
+    earthX,
+    centerY,
+    earthRadiusPx * 3.5
+  )
+  earthGlow.addColorStop(0, 'rgba(120, 190, 255, 0.9)')
+  earthGlow.addColorStop(1, 'rgba(40, 90, 160, 0.05)')
+  ctx.fillStyle = earthGlow
+  ctx.beginPath()
+  ctx.arc(earthX, centerY, earthRadiusPx * 3.2, 0, Math.PI * 2)
+  ctx.fill()
+
+  ctx.fillStyle = 'rgba(115, 186, 255, 0.96)'
+  ctx.beginPath()
+  ctx.arc(earthX, centerY, earthRadiusPx, 0, Math.PI * 2)
+  ctx.fill()
+
+  // Moon
+  ctx.fillStyle = 'rgba(222, 222, 228, 0.96)'
+  ctx.beginPath()
+  ctx.arc(moonX, centerY, moonRadiusPx, 0, Math.PI * 2)
+  ctx.fill()
+
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.92)'
+  ctx.font = '12px "Avenir Next", "Trebuchet MS", sans-serif'
+  ctx.fillText('Moon inset, true scale', 12, 18)
+  ctx.fillStyle = 'rgba(223, 231, 255, 0.78)'
+  ctx.font = '11px "Avenir Next", "Trebuchet MS", sans-serif'
+  ctx.fillText(`1 Earth radius = ${earthRadiusPx.toFixed(1)} px`, 12, 35)
+  ctx.fillText(`Moon distance = ${earthRadii.toFixed(1)} Earth radii`, 12, h - 14)
+
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.11)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(earthX, centerY + 18)
+  ctx.lineTo(earthX + earthRadiusPx * 10, centerY + 18)
+  ctx.stroke()
+  ctx.fillText('10 Earth radii', earthX, centerY + 34)
 }
 
 export async function buildEarthPanel(
@@ -613,6 +753,7 @@ async function buildCombinedPanel(
     getLabel?: () => string
     getTextureOffsetDeg?: () => number
     getCosmicAgeGyr: () => number
+    galaxySamples: GalaxySample[]
     getWeatherLines?: () => string[]
   }
 ) {
@@ -633,44 +774,82 @@ async function buildCombinedPanel(
   )
   scene.add(sunGlow)
 
-  // Universe backdrop: a loose cosmic-web cloud that lives behind the solar system.
-  const starsMaterial = new THREE.PointsMaterial({
-    color: 0xffffff,
-    size: 0.02,
-    sizeAttenuation: true,
-    transparent: true,
-    opacity: 0.75,
-  })
+  const backdropGroup = new THREE.Group()
+  backdropGroup.position.set(-12, 0, -12)
+  backdropGroup.rotation.y = -0.28
+  scene.add(backdropGroup)
 
+  // Universe backdrop: HyperLeda galaxy sample plotted as an observed Hubble flow.
+  const galaxySamples = opts.galaxySamples
   const galaxyGeom = new THREE.BufferGeometry()
-  const GALAXY_POINTS = 2000
-  const positions = new Float32Array(GALAXY_POINTS * 3)
+  const positions = new Float32Array(galaxySamples.length * 3)
+  const colors = new Float32Array(galaxySamples.length * 3)
 
-  for (let i = 0; i < GALAXY_POINTS; i++) {
-    const u = Math.random()
-    const r = Math.pow(u, 0.4) * 8
-    const theta = Math.acos(2 * Math.random() - 1)
-    const phi = Math.random() * 2 * Math.PI
+  const distScale = 0.11
+  const velScale = 0.00008
+  const depthScale = 0.45
 
-    let x = r * Math.sin(theta) * Math.cos(phi)
-    let y = r * Math.cos(theta)
-    let z = r * Math.sin(theta) * Math.sin(phi)
+  let sumXX = 0
+  let sumXY = 0
 
-    if (Math.random() < 0.2) {
-      const stretch = 1 + Math.random() * 2
-      const axis = Math.floor(Math.random() * 3)
-      if (axis === 0) x *= stretch
-      else if (axis === 1) y *= stretch
-      else z *= stretch
-    }
+  for (let i = 0; i < galaxySamples.length; i++) {
+    const sample = galaxySamples[i]
+    const x = sample.distanceMpc * distScale
+    const y = sample.velocityKms * velScale
+    const jitter = ((hashString(sample.name) % 1000) / 999 - 0.5) * depthScale
 
     positions[3 * i + 0] = x
     positions[3 * i + 1] = y
-    positions[3 * i + 2] = z
+    positions[3 * i + 2] = jitter
+
+    const density = clamp(sample.distanceMpc / 250, 0, 1)
+    const color = new THREE.Color()
+    color.setHSL(0.58 - density * 0.48, 0.72, 0.55 + (1 - density) * 0.12)
+    colors[3 * i + 0] = color.r
+    colors[3 * i + 1] = color.g
+    colors[3 * i + 2] = color.b
+
+    if (sample.distanceMpc > 5) {
+      sumXX += sample.distanceMpc * sample.distanceMpc
+      sumXY += sample.distanceMpc * sample.velocityKms
+    }
   }
+
   galaxyGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  const galaxy = new THREE.Points(galaxyGeom, starsMaterial)
-  scene.add(galaxy)
+  galaxyGeom.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  const galaxyMaterial = new THREE.PointsMaterial({
+    color: 0xffffff,
+    size: 0.03,
+    sizeAttenuation: true,
+    transparent: true,
+    opacity: 0.82,
+    vertexColors: true,
+  })
+  const galaxy = new THREE.Points(galaxyGeom, galaxyMaterial)
+  backdropGroup.add(galaxy)
+
+  const h0Fit = sumXX > 0 ? sumXY / sumXX : 67.4
+  const ageFromH0 = 977.8 / h0Fit
+  const galaxyLineGeom = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(250 * distScale, 250 * h0Fit * velScale, 0),
+  ])
+  const galaxyLine = new THREE.Line(
+    galaxyLineGeom,
+    new THREE.LineBasicMaterial({
+      color: 0xffcc66,
+      transparent: true,
+      opacity: 0.82,
+    })
+  )
+  backdropGroup.add(galaxyLine)
+
+  const galaxyGrid = new THREE.GridHelper(40, 16, 0x1f3557, 0x102033)
+  galaxyGrid.rotation.x = Math.PI / 2
+  galaxyGrid.position.y = 0
+  ;(galaxyGrid.material as THREE.Material).transparent = true
+  ;(galaxyGrid.material as THREE.Material).opacity = 0.15
+  backdropGroup.add(galaxyGrid)
 
   // Solar system scale: 1 unit = 1 AU.
   const AU = 1
@@ -788,6 +967,20 @@ async function buildCombinedPanel(
   const overlay = panel.root.querySelector<HTMLElement>('.overlay')!
   const tooltip = panel.root.querySelector<HTMLElement>('.tooltip')!
 
+  const moonInset = document.createElement('div')
+  moonInset.className = 'moon-inset'
+  moonInset.innerHTML = `
+    <div class="moon-inset-title">Moon true scale</div>
+    <canvas class="moon-inset-canvas" width="460" height="140"></canvas>
+    <div class="moon-inset-note">Earth-Moon distance rendered at actual scale, using the current geocentric vector.</div>
+  `
+  panel.root.appendChild(moonInset)
+  const moonInsetCanvas = moonInset.querySelector<HTMLCanvasElement>('.moon-inset-canvas')!
+  const moonInsetCtx = moonInsetCanvas.getContext('2d')
+  if (!moonInsetCtx) {
+    throw new Error('Moon inset canvas unavailable')
+  }
+
   const raycaster = new THREE.Raycaster()
   const mouse = new THREE.Vector2()
 
@@ -846,11 +1039,8 @@ async function buildCombinedPanel(
     const a = lcdmScaleFactor(ageGyr)
     const z = 1 / a - 1
 
-    const displayA = Math.log1p(a) / Math.log1p(lcdmScaleFactor(13.8))
-    const scale = 0.35 + Math.min(displayA, 2.4) * 0.65
-    galaxy.scale.set(scale, scale, scale)
-    starsMaterial.opacity = 0.18 + 0.65 * Math.min(1, a / lcdmScaleFactor(13.8))
-    galaxy.rotation.y = performance.now() / 10000
+    galaxy.scale.set(0.82, 0.82, 0.82)
+    galaxy.rotation.y = 0.22
 
     let epochLabel = 'late universe'
     if (ageGyr < 0.18) epochLabel = 'dark ages / cosmic dawn'
@@ -905,6 +1095,9 @@ async function buildCombinedPanel(
     const daylight = hor.altitude > 0
     const weatherLines = opts.getWeatherLines ? opts.getWeatherLines() : []
 
+    const moonDistanceKm = vectorLength(moonVec, AU_KM)
+    const moonDistanceEarthRadii = moonDistanceKm / 6371
+
     overlay.innerHTML = `
       <div class="combined-overlay">
         <section class="info-card info-card-earth">
@@ -915,6 +1108,7 @@ async function buildCombinedPanel(
             <div>Sim time: ${escapeHtml(formatTime(t.sim))} (${escapeHtml(DEFAULT_TIME_ZONE)})</div>
             <div>Sun alt/az: ${hor.altitude.toFixed(1)}° / ${hor.azimuth.toFixed(1)}°</div>
             <div>Location: ${daylight ? 'daylight' : 'night'}</div>
+            <div>Moon inset: true scale, Earth radius = 2.8 px</div>
             ${weatherLines.map((line) => `<div>${escapeHtml(line)}</div>`).join('')}
           </div>
         </section>
@@ -924,7 +1118,8 @@ async function buildCombinedPanel(
           <div class="card-lines">
             <div>Earth-Sun distance: ${earthDistanceAU.toFixed(3)} AU</div>
             <div>Earth ecliptic longitude: ${((Math.atan2(earthGroup.position.z, earthGroup.position.x) * 180) / Math.PI).toFixed(1)}°</div>
-            <div>Moon shown at ${moonExaggeration}x display scale for legibility</div>
+            <div>Moon main-view scale: ${moonExaggeration}x for legibility</div>
+            <div>Moon true distance: ${moonDistanceKm.toFixed(0)} km (${moonDistanceEarthRadii.toFixed(1)} Earth radii)</div>
           </div>
         </section>
         <section class="info-card info-card-universe">
@@ -934,11 +1129,15 @@ async function buildCombinedPanel(
             <div>Cosmic age ≈ ${ageGyr.toFixed(2)} Gyr</div>
             <div>Scale factor a(t) ≈ ${a.toFixed(3)}</div>
             <div>Redshift z ≈ ${z.toFixed(2)}</div>
-            <div>Backdrop: ${escapeHtml(epochLabel)}</div>
+            <div>Backdrop: HyperLeda galaxy sample (${galaxySamples.length} objects)</div>
+            <div>H0 fit ≈ ${h0Fit.toFixed(1)} km/s/Mpc, Hubble time ≈ ${ageFromH0.toFixed(2)} Gyr</div>
+            <div>Epoch: ${escapeHtml(epochLabel)}</div>
           </div>
         </section>
       </div>
     `
+
+    drawMoonInset(moonInsetCanvas, moonInsetCtx, moonVec)
   }
 }
 
@@ -1123,6 +1322,10 @@ async function main() {
   time.speed = params.speed
 
   const panel = makePanel('combined', showcaseShell)
+  const galaxySamples = await loadGalaxySamples().catch((err) => {
+    console.warn(err)
+    return [] as GalaxySample[]
+  })
 
   await buildCombinedPanel(panel, {
     getLat: () => params.lat,
@@ -1130,6 +1333,7 @@ async function main() {
     getLabel: () => formatLocationLabel(params.lat, params.lon),
     getTextureOffsetDeg: () => params.earthTextureOffsetDeg,
     getCosmicAgeGyr: () => params.cosmicAgeGyr,
+    galaxySamples,
     getWeatherLines: () => {
       if (!params.weather) return ['Weather: (disabled)']
       if (weather.error) return [`Weather: error (${weather.error})`]
