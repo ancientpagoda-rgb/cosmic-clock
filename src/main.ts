@@ -671,7 +671,7 @@ async function main() {
   app.innerHTML = `
     <header>
       <div class="brand">Cosmic Clock</div>
-      <div class="hint">Drag to orbit • Scroll to zoom • Right-drag to pan</div>
+      <div class="hint">Drag to orbit • Scroll to zoom • Right-drag to pan • <a class="world-link" href="./world/">World globe</a></div>
     </header>
     <div id="panels"></div>
   `

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>World — globe briefing</title>
+    <meta
+      name="description"
+      content="World is a browser-based globe briefing surface with refreshed weather, country-linked headlines, and search/navigation controls."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <canvas id="starfield-canvas" class="starfield-canvas"></canvas>
+    <div id="build-tag" class="build-tag"></div>
+    <main>
+      <section class="orb-panel" aria-label="Earth">
+        <canvas
+          id="weather-orb-canvas"
+          class="weather-orb-canvas"
+          width="960"
+          height="960"
+          aria-label="Rotating earth weather simulation"
+        ></canvas>
+      </section>
+
+      <section class="world-controls" aria-label="World list controls">
+        <div class="control-panel">
+          <div class="control-field">
+            <label for="country-filter" class="sr-only">Filter</label>
+            <input
+              id="country-filter"
+              type="search"
+              inputmode="search"
+              autocomplete="off"
+              aria-label="Filter"
+            />
+          </div>
+
+          <div class="control-field">
+            <label for="country-jump" class="sr-only">Select</label>
+            <select id="country-jump">
+              <option value=""></option>
+            </select>
+          </div>
+
+          <button
+            id="rasters-toggle"
+            class="rasters-toggle"
+            type="button"
+            aria-label="Toggle weather raster overlays"
+          >Rasters: Off</button>
+
+          <p id="country-summary" class="country-summary" aria-live="polite" hidden></p>
+        </div>
+      </section>
+
+      <section class="country-list-section" aria-labelledby="country-list-heading">
+        <h2 id="country-list-heading" class="sr-only">Country briefing list</h2>
+        <div id="country-list" class="country-list"></div>
+      </section>
+    </main>
+
+    <script>
+      (async () => {
+        const searchParams = new URLSearchParams(location.search);
+        if (searchParams.get("debug") === "1") {
+          document.body.classList.add("debug-mode");
+        }
+
+        // Cache-bust app.js using earth-live.json (updated by CI).
+        // This avoids users getting stuck on a stale cached app.js on GitHub Pages.
+        let v = "";
+        try {
+          const meta = await fetch("./earth-live.json", { cache: "no-store" }).then((r) => r.json());
+          v = (typeof meta?.generatedAt === "string" && meta.generatedAt) || (typeof meta?.requestedTime === "string" && meta.requestedTime) || "";
+        } catch {
+          v = String(Date.now());
+        }
+
+        // app.js changes more frequently than earth-live.json; always bust it.
+        const appV = String(Date.now());
+        const s = document.createElement("script");
+        s.src = `./app.js?v=${encodeURIComponent(appV)}`;
+        s.onerror = () => {
+          const tag = document.getElementById("build-tag");
+          if (tag) tag.textContent += "\nERROR: Failed to load app.js";
+          console.error("Failed to load app.js");
+        };
+        document.body.appendChild(s);
+
+        const tag = document.getElementById("build-tag");
+        if (tag) tag.textContent = `World v1.0.6\nbuild ${v || ""}${v ? " | " : ""}app ${appV}\nagent: connected`;
+
+        const toggle = document.getElementById("rasters-toggle");
+        const rastersOn = () => searchParams.get("rasters") === "1";
+        const setToggleLabel = () => {
+          if (!toggle) return;
+          toggle.textContent = `Rasters: ${rastersOn() ? "On" : "Off"}`;
+        };
+        if (toggle) {
+          setToggleLabel();
+          toggle.addEventListener("click", () => {
+            const url = new URL(location.href);
+            if (url.searchParams.get("rasters") === "1") url.searchParams.delete("rasters");
+            else url.searchParams.set("rasters", "1");
+            location.href = url.toString();
+          });
+        }
+
+      })();
+    </script>
+  </body>
+</html>

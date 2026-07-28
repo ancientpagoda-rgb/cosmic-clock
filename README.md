@@ -6,6 +6,8 @@ Three real-time, 3D-zoomable diagrams:
 2. **Solar System** — live heliocentric planet positions in AU, plus an exaggerated Moon marker near Earth.
 3. **Universe** — conceptual cosmic-web view with a cosmic-age slider and approximate flat ΛCDM scale factor/redshift readout.
 
+The repo also ships the separate World globe at `/world/`.
+
 ## Live demo (GitHub Pages)
 After you push this repo to GitHub and enable Pages (Actions), it will deploy automatically.
 

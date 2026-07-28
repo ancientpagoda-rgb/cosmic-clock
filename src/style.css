@@ -37,6 +37,17 @@ header {
   font-size: 12px;
 }
 
+.world-link {
+  color: rgba(133, 201, 255, 0.95);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(133, 201, 255, 0.35);
+}
+
+.world-link:hover {
+  color: #ffffff;
+  border-bottom-color: rgba(255, 255, 255, 0.65);
+}
+
 #panels {
   flex: 1;
   display: grid;
