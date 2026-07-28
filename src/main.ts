@@ -5,12 +5,14 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import GUI from 'lil-gui'
 import {
   Body,
+  Ecliptic,
   GeoVector,
   HelioVector,
   Observer,
   Equator,
   Horizon,
   SiderealTime,
+  Vector as AstroVector,
 } from 'astronomy-engine'
 
 // Lawrence, KS
@@ -82,18 +84,21 @@ function makePanel(name: string, root: HTMLElement): Panel {
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })
   renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5))
+  renderer.outputColorSpace = THREE.SRGBColorSpace
+  renderer.toneMapping = THREE.ACESFilmicToneMapping
+  renderer.toneMappingExposure = 1.12
   root.appendChild(renderer.domElement)
 
   const controls = new OrbitControls(camera, renderer.domElement)
   controls.enableDamping = true
-  controls.dampingFactor = 0.08
-  controls.rotateSpeed = 0.45
-  controls.zoomSpeed = 0.8
-  controls.panSpeed = 0.6
+  controls.dampingFactor = 0.065
+  controls.rotateSpeed = 0.28
+  controls.zoomSpeed = 0.7
+  controls.panSpeed = 0.28
   controls.enablePan = true
   controls.screenSpacePanning = false
-  controls.minPolarAngle = 0.15
-  controls.maxPolarAngle = Math.PI - 0.15
+  controls.minPolarAngle = 0.08
+  controls.maxPolarAngle = Math.PI - 0.08
 
   const onResize = () => {
     const w = root.clientWidth
@@ -145,29 +150,32 @@ function unit(v: THREE.Vector3) {
   return out
 }
 
-function astroToThreeVec(v: { x: number; y: number; z: number }, scale = 1) {
+function astroToThreeVec(v: AstroVector, scale = 1) {
   // astronomy-engine vectors are in an equatorial coordinate system where +Z is north.
   // Three.js is typically Y-up, so map astro Z -> three Y.
   // We also map astro Y -> three Z to keep a right-handed system.
   return new THREE.Vector3(v.x * scale, v.z * scale, v.y * scale)
 }
 
-function helioToEclipticPlane(v: { x: number; y: number; z: number }, scale = 1) {
-  // astronomy-engine heliocentric vectors are equatorial. Rotate by Earth's
-  // obliquity so the Solar System panel is a top-down ecliptic view.
-  const eclipticY = v.y * Math.cos(OBLIQUITY_RAD) + v.z * Math.sin(OBLIQUITY_RAD)
-  return new THREE.Vector3(v.x * scale, 0, eclipticY * scale)
+function eclipticToThreeVec(v: AstroVector, scale = 1) {
+  // astronomy-engine ecliptic vectors use +Z as ecliptic north.
+  // Three.js stays Y-up here, so map ecliptic Z -> three Y.
+  return new THREE.Vector3(v.x * scale, v.z * scale, v.y * scale)
 }
 
-function helioToEclipticVec(v: { x: number; y: number; z: number }, scale = 1) {
-  // Use the actual 3D heliocentric vector, rotated into the ecliptic frame.
-  const eclX = v.x
-  const eclY = v.y * Math.cos(OBLIQUITY_RAD) + v.z * Math.sin(OBLIQUITY_RAD)
-  const eclZ = -v.y * Math.sin(OBLIQUITY_RAD) + v.z * Math.cos(OBLIQUITY_RAD)
-  return new THREE.Vector3(eclX * scale, eclZ * scale, eclY * scale)
+function helioToEclipticPlane(v: AstroVector, scale = 1) {
+  // astronomy-engine already gives heliocentric vectors in the J2000 equatorial
+  // frame. Convert that to the true ecliptic of date, then flatten to a top-down view.
+  const eclip = Ecliptic(v).vec
+  return new THREE.Vector3(eclip.x * scale, 0, eclip.y * scale)
 }
 
-function vectorLength(v: { x: number; y: number; z: number }, scale = 1) {
+function helioToEclipticVec(v: AstroVector, scale = 1) {
+  // Use the actual 3D heliocentric vector, rotated into the true ecliptic frame.
+  return eclipticToThreeVec(Ecliptic(v).vec, scale)
+}
+
+function vectorLength(v: AstroVector, scale = 1) {
   return Math.hypot(v.x, v.y, v.z) * scale
 }
 
@@ -195,6 +203,53 @@ function hashString(value: string) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
+}
+
+function makeGlowTexture(
+  innerColor: string,
+  outerColor: string,
+  size = 256
+) {
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Glow texture context unavailable')
+
+  const cx = size / 2
+  const cy = size / 2
+  const radius = size / 2
+  const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius)
+  gradient.addColorStop(0, innerColor)
+  gradient.addColorStop(0.28, innerColor)
+  gradient.addColorStop(0.72, outerColor)
+  gradient.addColorStop(1, 'rgba(0, 0, 0, 0)')
+  ctx.fillStyle = gradient
+  ctx.fillRect(0, 0, size, size)
+
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  return texture
+}
+
+function makeGlowSprite(
+  innerColor: string,
+  outerColor: string,
+  opacity: number,
+  size = 256
+) {
+  const texture = makeGlowTexture(innerColor, outerColor, size)
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    opacity,
+    color: 0xffffff,
+  })
+  const sprite = new THREE.Sprite(material)
+  sprite.renderOrder = -1
+  return sprite
 }
 
 async function loadGalaxySamples() {
@@ -230,7 +285,7 @@ async function loadGalaxySamples() {
 function drawMoonInset(
   canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
-  moonVec: { x: number; y: number; z: number }
+  moonVec: AstroVector
 ) {
   const w = canvas.width
   const h = canvas.height
@@ -317,7 +372,43 @@ function drawMoonInset(
   ctx.fillText('10 Earth radii', earthX, centerY + 34)
 }
 
-function buildHubbleChartSvg(samples: GalaxySample[], h0Fit: number) {
+type HubbleFit = {
+  slope: number
+  intercept: number
+  sampleCount: number
+  minDistanceMpc: number
+}
+
+function fitHubbleSample(samples: GalaxySample[], minDistanceMpc = 5): HubbleFit {
+  const subset = samples.filter((sample) => sample.distanceMpc > minDistanceMpc)
+  if (subset.length === 0) {
+    return { slope: 67.4, intercept: 0, sampleCount: 0, minDistanceMpc }
+  }
+
+  let sumX = 0
+  let sumY = 0
+  for (const sample of subset) {
+    sumX += sample.distanceMpc
+    sumY += sample.velocityKms
+  }
+
+  const meanX = sumX / subset.length
+  const meanY = sumY / subset.length
+
+  let sxx = 0
+  let sxy = 0
+  for (const sample of subset) {
+    const dx = sample.distanceMpc - meanX
+    sxx += dx * dx
+    sxy += dx * (sample.velocityKms - meanY)
+  }
+
+  const slope = sxx > 0 ? sxy / sxx : 67.4
+  const intercept = meanY - slope * meanX
+  return { slope, intercept, sampleCount: subset.length, minDistanceMpc }
+}
+
+function buildHubbleChartSvg(samples: GalaxySample[], fit: HubbleFit) {
   if (samples.length === 0) {
     return '<div class="chart-empty">No galaxy sample loaded.</div>'
   }
@@ -334,12 +425,17 @@ function buildHubbleChartSvg(samples: GalaxySample[], h0Fit: number) {
   const subset = samples.filter((_, i) => i % step === 0).slice(0, subsetCount)
 
   const xMax = Math.max(20, ...subset.map((s) => s.distanceMpc))
-  const yMax = Math.max(1500, ...subset.map((s) => Math.abs(s.velocityKms)))
+  const yMax = Math.max(
+    1500,
+    ...subset.map((s) => Math.abs(s.velocityKms)),
+    Math.abs(fit.intercept),
+    Math.abs(fit.slope * xMax + fit.intercept)
+  )
 
   const sx = (d: number) => padL + (d / xMax) * (width - padL - padR)
   const sy = (v: number) => height - padB - ((v + yMax) / (2 * yMax)) * (height - padT - padB)
-  const fitY1 = sy(-h0Fit * xMax)
-  const fitY2 = sy(h0Fit * xMax)
+  const fitY1 = sy(fit.intercept)
+  const fitY2 = sy(fit.slope * xMax + fit.intercept)
 
   const points = subset
     .map((s) => {
@@ -844,11 +940,16 @@ async function buildCombinedPanel(
   sunLight.position.set(0, 0, 0)
   scene.add(sunLight)
 
-  const sunGlow = new THREE.Mesh(
-    new THREE.SphereGeometry(0.16, 32, 32),
-    new THREE.MeshBasicMaterial({ color: 0xffcc66 })
+  const sunGlow = makeGlowSprite(
+    'rgba(255, 230, 180, 0.92)',
+    'rgba(255, 204, 102, 0.12)',
+    0.92
   )
+  sunGlow.scale.setScalar(0.92)
   scene.add(sunGlow)
+
+  let motionMix = 1
+  let targetMotionMix = 1
 
   const backdropGroup = new THREE.Group()
   backdropGroup.position.set(-12, 0, -12)
@@ -864,9 +965,6 @@ async function buildCombinedPanel(
   const distScale = 0.11
   const velScale = 0.00008
   const depthScale = 0.45
-
-  let sumXX = 0
-  let sumXY = 0
 
   for (let i = 0; i < galaxySamples.length; i++) {
     const sample = galaxySamples[i]
@@ -885,10 +983,6 @@ async function buildCombinedPanel(
     colors[3 * i + 1] = color.g
     colors[3 * i + 2] = color.b
 
-    if (sample.distanceMpc > 5) {
-      sumXX += sample.distanceMpc * sample.distanceMpc
-      sumXY += sample.distanceMpc * sample.velocityKms
-    }
   }
 
   galaxyGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3))
@@ -903,22 +997,6 @@ async function buildCombinedPanel(
   })
   const galaxy = new THREE.Points(galaxyGeom, galaxyMaterial)
   backdropGroup.add(galaxy)
-
-  const h0Fit = sumXX > 0 ? sumXY / sumXX : 67.4
-  const ageFromH0 = 977.8 / h0Fit
-  const galaxyLineGeom = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(0, 0, 0),
-    new THREE.Vector3(250 * distScale, 250 * h0Fit * velScale, 0),
-  ])
-  const galaxyLine = new THREE.Line(
-    galaxyLineGeom,
-    new THREE.LineBasicMaterial({
-      color: 0xffcc66,
-      transparent: true,
-      opacity: 0.82,
-    })
-  )
-  backdropGroup.add(galaxyLine)
 
   const galaxyGrid = new THREE.GridHelper(40, 16, 0x1f3557, 0x102033)
   galaxyGrid.rotation.x = Math.PI / 2
@@ -985,6 +1063,9 @@ async function buildCombinedPanel(
 
   for (const b of bodies) {
     const group = new THREE.Group()
+    if (b.body === Body.Earth) {
+      group.rotation.x = -OBLIQUITY_RAD
+    }
     scene.add(group)
     planetGroups.set(b.body, group)
 
@@ -1062,10 +1143,75 @@ async function buildCombinedPanel(
   hubbleStrip.innerHTML = `
     <div class="hubble-strip-title">Hubble flow / HyperLeda sample</div>
     <div class="hubble-strip-chart"></div>
-    <div class="hubble-strip-note">Distance modulus to distance, velocity versus distance, zero-intercept fit.</div>
+    <div class="hubble-strip-note">Distance modulus to distance, velocity versus distance, least-squares fit with intercept.</div>
   `
   panel.root.appendChild(hubbleStrip)
   const hubbleStripChart = hubbleStrip.querySelector<HTMLDivElement>('.hubble-strip-chart')!
+  const hubbleFit = fitHubbleSample(galaxySamples)
+  const h0Fit = hubbleFit.slope
+  const ageFromH0 = 977.8 / h0Fit
+  hubbleStripChart.innerHTML = buildHubbleChartSvg(galaxySamples, hubbleFit)
+
+  overlay.innerHTML = `
+    <div class="combined-overlay">
+      <section class="info-card info-card-earth">
+        <p class="card-kicker">Earth</p>
+        <h2 data-field="earth-label"></h2>
+        <div class="card-lines">
+          <div>Clock time: <span data-field="clock-time"></span></div>
+          <div>Sim time: <span data-field="sim-time"></span></div>
+          <div>Sun alt/az: <span data-field="sun-altaz"></span></div>
+          <div>Location: <span data-field="daylight"></span></div>
+          <div>Earth axial tilt: <span data-field="earth-tilt"></span> · Moon inset: true scale, Earth radius = 2.8 px</div>
+          <div data-field="weather-line"></div>
+        </div>
+      </section>
+      <section class="info-card info-card-solar">
+        <p class="card-kicker">Solar System</p>
+        <h2>Planets in motion</h2>
+        <div class="card-lines">
+          <div>Earth-Sun distance: <span data-field="earth-distance"></span> AU</div>
+          <div>Earth ecliptic longitude: <span data-field="earth-longitude"></span></div>
+          <div>Moon main-view scale: <span data-field="moon-exaggeration"></span>x for legibility</div>
+          <div>Moon true distance: <span data-field="moon-distance"></span> km (<span data-field="moon-earth-radii"></span> Earth radii)</div>
+        </div>
+      </section>
+      <section class="info-card info-card-universe">
+        <p class="card-kicker">Universe</p>
+        <h2>ΛCDM age model</h2>
+        <div class="card-lines">
+          <div>Cosmic age ≈ <span data-field="cosmic-age"></span> Gyr</div>
+          <div>Scale factor a(t) ≈ <span data-field="scale-factor"></span></div>
+          <div>Redshift z ≈ <span data-field="redshift"></span></div>
+          <div>Backdrop: HyperLeda galaxy sample (<span data-field="galaxy-count"></span> objects)</div>
+          <div>H0 fit ≈ <span data-field="h0-fit"></span> km/s/Mpc, offset ≈ <span data-field="hubble-offset"></span> km/s, Hubble time ≈ <span data-field="hubble-time"></span> Gyr</div>
+          <div>Epoch: <span data-field="epoch"></span></div>
+        </div>
+      </section>
+    </div>
+  `
+  const overlayFields = {
+    earthLabel: overlay.querySelector<HTMLElement>('[data-field="earth-label"]')!,
+    clockTime: overlay.querySelector<HTMLElement>('[data-field="clock-time"]')!,
+    simTime: overlay.querySelector<HTMLElement>('[data-field="sim-time"]')!,
+    sunAltAz: overlay.querySelector<HTMLElement>('[data-field="sun-altaz"]')!,
+    daylight: overlay.querySelector<HTMLElement>('[data-field="daylight"]')!,
+    earthTilt: overlay.querySelector<HTMLElement>('[data-field="earth-tilt"]')!,
+    weatherLine: overlay.querySelector<HTMLElement>('[data-field="weather-line"]')!,
+    earthDistance: overlay.querySelector<HTMLElement>('[data-field="earth-distance"]')!,
+    earthLongitude: overlay.querySelector<HTMLElement>('[data-field="earth-longitude"]')!,
+    moonExaggeration: overlay.querySelector<HTMLElement>('[data-field="moon-exaggeration"]')!,
+    moonDistance: overlay.querySelector<HTMLElement>('[data-field="moon-distance"]')!,
+    moonEarthRadii: overlay.querySelector<HTMLElement>('[data-field="moon-earth-radii"]')!,
+    cosmicAge: overlay.querySelector<HTMLElement>('[data-field="cosmic-age"]')!,
+    scaleFactor: overlay.querySelector<HTMLElement>('[data-field="scale-factor"]')!,
+    redshift: overlay.querySelector<HTMLElement>('[data-field="redshift"]')!,
+    galaxyCount: overlay.querySelector<HTMLElement>('[data-field="galaxy-count"]')!,
+    h0Fit: overlay.querySelector<HTMLElement>('[data-field="h0-fit"]')!,
+    hubbleOffset: overlay.querySelector<HTMLElement>('[data-field="hubble-offset"]')!,
+    hubbleTime: overlay.querySelector<HTMLElement>('[data-field="hubble-time"]')!,
+    epoch: overlay.querySelector<HTMLElement>('[data-field="epoch"]')!,
+  }
 
   const raycaster = new THREE.Raycaster()
   const mouse = new THREE.Vector2()
@@ -1119,20 +1265,28 @@ async function buildCombinedPanel(
   controls.maxDistance = 80
   camera.position.set(0, 12, 18)
   camera.lookAt(0, 0, 0)
+  controls.addEventListener('start', () => {
+    targetMotionMix = 0.22
+  })
+  controls.addEventListener('end', () => {
+    targetMotionMix = 1
+  })
 
   panel.onFrame = (t) => {
     const ageGyr = opts.getCosmicAgeGyr()
     const a = lcdmScaleFactor(ageGyr)
     const z = 1 / a - 1
     const timeSec = performance.now() / 1000
+    motionMix += (targetMotionMix - motionMix) * 0.08
+    const ambientMotion = 0.18 + motionMix * 0.82
 
     galaxy.scale.set(0.82, 0.82, 0.82)
-    galaxy.rotation.y = 0.22 + Math.sin(timeSec * 0.03) * 0.018
-    galaxy.rotation.z = Math.sin(timeSec * 0.017) * 0.012
-    galaxyMaterial.opacity = 0.74 + Math.sin(timeSec * 0.11) * 0.04
-    backdropGroup.rotation.y = -0.28 + Math.sin(timeSec * 0.01) * 0.03
-    backdropGroup.rotation.z = Math.sin(timeSec * 0.02) * 0.02
-    sunGlow.scale.setScalar(1 + Math.sin(timeSec * 1.9) * 0.035)
+    galaxy.rotation.y = 0.22 + Math.sin(timeSec * 0.03) * 0.018 * ambientMotion
+    galaxy.rotation.z = Math.sin(timeSec * 0.017) * 0.012 * ambientMotion
+    galaxyMaterial.opacity = 0.74 + Math.sin(timeSec * 0.11) * 0.04 * ambientMotion
+    backdropGroup.rotation.y = -0.28 + Math.sin(timeSec * 0.01) * 0.03 * ambientMotion
+    backdropGroup.rotation.z = Math.sin(timeSec * 0.02) * 0.02 * ambientMotion
+    sunGlow.scale.setScalar(0.92 + Math.sin(timeSec * 1.9) * 0.035 * ambientMotion)
 
     let epochLabel = 'late universe'
     if (ageGyr < 0.18) epochLabel = 'dark ages / cosmic dawn'
@@ -1166,7 +1320,7 @@ async function buildCombinedPanel(
 
     const gstHours = SiderealTime(t.sim)
     const gstRad = (gstHours * 15 * Math.PI) / 180
-    earthMesh.rotation.y = -gstRad
+    earthGroup.rotation.y = -gstRad
 
     const lat = opts.getLat()
     const lon = opts.getLon()
@@ -1189,47 +1343,26 @@ async function buildCombinedPanel(
 
     const moonDistanceKm = vectorLength(moonVec, AU_KM)
     const moonDistanceEarthRadii = moonDistanceKm / 6371
-    const hubbleChartSvg = buildHubbleChartSvg(galaxySamples, h0Fit)
-    hubbleStripChart.innerHTML = hubbleChartSvg
-
-    overlay.innerHTML = `
-      <div class="combined-overlay">
-        <section class="info-card info-card-earth">
-          <p class="card-kicker">Earth</p>
-          <h2>${escapeHtml(label)}</h2>
-          <div class="card-lines">
-            <div>Clock time: ${escapeHtml(formatTime(t.now))} (${escapeHtml(DEFAULT_TIME_ZONE)})</div>
-            <div>Sim time: ${escapeHtml(formatTime(t.sim))} (${escapeHtml(DEFAULT_TIME_ZONE)})</div>
-            <div>Sun alt/az: ${hor.altitude.toFixed(1)}° / ${hor.azimuth.toFixed(1)}°</div>
-            <div>Location: ${daylight ? 'daylight' : 'night'}</div>
-            <div>Moon inset: true scale, Earth radius = 2.8 px</div>
-            ${weatherLines.map((line) => `<div>${escapeHtml(line)}</div>`).join('')}
-          </div>
-        </section>
-        <section class="info-card info-card-solar">
-          <p class="card-kicker">Solar System</p>
-          <h2>Planets in motion</h2>
-          <div class="card-lines">
-            <div>Earth-Sun distance: ${earthDistanceAU.toFixed(3)} AU</div>
-            <div>Earth ecliptic longitude: ${((Math.atan2(earthGroup.position.z, earthGroup.position.x) * 180) / Math.PI).toFixed(1)}°</div>
-            <div>Moon main-view scale: ${moonExaggeration}x for legibility</div>
-            <div>Moon true distance: ${moonDistanceKm.toFixed(0)} km (${moonDistanceEarthRadii.toFixed(1)} Earth radii)</div>
-          </div>
-        </section>
-        <section class="info-card info-card-universe">
-          <p class="card-kicker">Universe</p>
-          <h2>ΛCDM age model</h2>
-          <div class="card-lines">
-            <div>Cosmic age ≈ ${ageGyr.toFixed(2)} Gyr</div>
-            <div>Scale factor a(t) ≈ ${a.toFixed(3)}</div>
-            <div>Redshift z ≈ ${z.toFixed(2)}</div>
-            <div>Backdrop: HyperLeda galaxy sample (${galaxySamples.length} objects)</div>
-            <div>H0 fit ≈ ${h0Fit.toFixed(1)} km/s/Mpc, Hubble time ≈ ${ageFromH0.toFixed(2)} Gyr</div>
-            <div>Epoch: ${escapeHtml(epochLabel)}</div>
-          </div>
-        </section>
-      </div>
-    `
+    overlayFields.earthLabel.textContent = label
+    overlayFields.clockTime.textContent = `${formatTime(t.now)} (${DEFAULT_TIME_ZONE})`
+    overlayFields.simTime.textContent = `${formatTime(t.sim)} (${DEFAULT_TIME_ZONE})`
+    overlayFields.sunAltAz.textContent = `${hor.altitude.toFixed(1)}° / ${hor.azimuth.toFixed(1)}°`
+    overlayFields.daylight.textContent = daylight ? 'daylight' : 'night'
+    overlayFields.earthTilt.textContent = `${(OBLIQUITY_RAD * 180 / Math.PI).toFixed(1)}°`
+    overlayFields.weatherLine.innerHTML = weatherLines.map((line) => `<div>${escapeHtml(line)}</div>`).join('')
+    overlayFields.earthDistance.textContent = earthDistanceAU.toFixed(3)
+    overlayFields.earthLongitude.textContent = `${((Math.atan2(earthGroup.position.z, earthGroup.position.x) * 180) / Math.PI).toFixed(1)}°`
+    overlayFields.moonExaggeration.textContent = `${moonExaggeration}`
+    overlayFields.moonDistance.textContent = moonDistanceKm.toFixed(0)
+    overlayFields.moonEarthRadii.textContent = moonDistanceEarthRadii.toFixed(1)
+    overlayFields.cosmicAge.textContent = ageGyr.toFixed(2)
+    overlayFields.scaleFactor.textContent = a.toFixed(3)
+    overlayFields.redshift.textContent = z.toFixed(2)
+    overlayFields.galaxyCount.textContent = `${galaxySamples.length}`
+    overlayFields.h0Fit.textContent = h0Fit.toFixed(1)
+    overlayFields.hubbleOffset.textContent = `${hubbleFit.intercept >= 0 ? '+' : ''}${hubbleFit.intercept.toFixed(0)}`
+    overlayFields.hubbleTime.textContent = ageFromH0.toFixed(2)
+    overlayFields.epoch.textContent = epochLabel
 
     drawMoonInset(moonInsetCanvas, moonInsetCtx, moonVec)
   }
