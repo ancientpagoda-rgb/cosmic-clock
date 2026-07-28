@@ -1,10 +1,10 @@
 # Cosmic Clock
 
-Three real-time, 3D-zoomable diagrams:
+One real-time, 3D-zoomable cosmic showcase that combines:
 
-1. **Earth (Lawrence, KS)** — rotating globe + day/night lighting driven by the real Sun direction.
+1. **Earth (Lawrence, KS)** — a rotating globe with day/night lighting driven by the real Sun direction.
 2. **Solar System** — live heliocentric planet positions in AU, plus an exaggerated Moon marker near Earth.
-3. **Universe** — conceptual cosmic-web view with a cosmic-age slider and approximate flat ΛCDM scale factor/redshift readout.
+3. **Universe** — a conceptual cosmic-web backdrop with a cosmic-age slider and approximate flat ΛCDM scale factor/redshift readout.
 
 The repo also ships the separate World globe at `/world/`.
 
